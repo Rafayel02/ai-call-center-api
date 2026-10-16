@@ -1,8 +1,30 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
+const COMMON_VOICE_SOURCE = 'common_voice_20_armenian';
+
+const publicSample = {
+  id: true,
+  sentence: true,
+  age: true,
+  gender: true,
+  locale: true,
+  mimeType: true,
+  filename: true,
+  byteSize: true,
+  source: true,
+  externalId: true,
+  createdAt: true,
+  createdBy: { select: { id: true, email: true } },
+} as const;
+
+function blankToNull(value?: string) {
+  const trimmed = value?.trim() ?? '';
+  if (!trimmed || trimmed.toLowerCase() === 'nan' || trimmed.toLowerCase() === 'none') return null;
+  return trimmed;
+}
 
 interface AudioUpload {
   buffer?: Buffer;
@@ -18,25 +40,24 @@ export class DatasetService {
   async list() {
     const samples = await this.prisma.datasetSample.findMany({
       orderBy: { createdAt: 'desc' },
-      select: {
-        id: true,
-        name: true,
-        transcript: true,
-        mimeType: true,
-        filename: true,
-        byteSize: true,
-        createdAt: true,
-        createdBy: { select: { id: true, email: true } },
-      },
+      select: publicSample,
     });
     return samples;
   }
 
-  async create(input: { name: string; transcript: string }, file: AudioUpload | undefined, userId: string) {
-    const name = input.name.trim();
-    const transcript = input.transcript.trim();
-    if (!name) throw new BadRequestException('Name is required.');
-    if (!transcript) throw new BadRequestException('Exact text is required.');
+  async create(
+    input: { sentence: string; age?: string; gender?: string; locale?: string; source?: string; externalId?: string },
+    file: AudioUpload | undefined,
+    userId: string,
+  ) {
+    const sentence = input.sentence.trim();
+    if (!sentence) throw new BadRequestException('Sentence is required.');
+    const source = blankToNull(input.source);
+    const externalId = blankToNull(input.externalId);
+    if (source && source !== COMMON_VOICE_SOURCE) {
+      throw new BadRequestException('Unknown dataset source.');
+    }
+    if (source && !externalId) throw new BadRequestException('Imported samples need an external id.');
     if (!file?.buffer?.length) throw new BadRequestException('Choose an audio file.');
     if ((file.size ?? file.buffer.length) > MAX_AUDIO_BYTES) {
       throw new BadRequestException('Audio file must be 25 MB or smaller.');
@@ -46,27 +67,30 @@ export class DatasetService {
       throw new BadRequestException('Upload an audio file.');
     }
     const filename = (file.originalname || 'audio').replace(/[^\w.\-]+/g, '_').slice(0, 120);
-    const sample = await this.prisma.datasetSample.create({
+    let sample;
+    try {
+      sample = await this.prisma.datasetSample.create({
       data: {
-        name,
-        transcript,
+        sentence,
+        age: blankToNull(input.age),
+        gender: blankToNull(input.gender),
+        locale: blankToNull(input.locale),
+        source,
+        externalId,
         audio: Uint8Array.from(file.buffer),
         mimeType,
         filename,
         byteSize: file.buffer.length,
         createdById: userId,
       },
-      select: {
-        id: true,
-        name: true,
-        transcript: true,
-        mimeType: true,
-        filename: true,
-        byteSize: true,
-        createdAt: true,
-        createdBy: { select: { id: true, email: true } },
-      },
+      select: publicSample,
     });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new ConflictException('This sample is already imported.');
+      }
+      throw error;
+    }
     return sample;
   }
 

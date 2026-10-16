@@ -47,16 +47,21 @@ model SpeechToTextModel {
 
 model DatasetSample {
   id          String   @id @default(uuid()) @db.Uuid
-  name        String
-  transcript  String
+  sentence    String
+  age         String?
+  gender      String?
+  locale      String?
   audio       Bytes
   mimeType    String   @map("mime_type")
   filename    String
   byteSize    Int      @map("byte_size")
+  source      String?
+  externalId  String?  @unique @map("external_id")
   createdAt   DateTime @default(now()) @map("created_at")
   createdById String   @map("created_by") @db.Uuid
   createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Restrict)
 
   @@index([createdById])
+  @@index([source])
   @@map("dataset_samples")
 }
