@@ -96,9 +96,28 @@ model TextToSpeechModel {
   createdById String      @map("created_by") @db.Uuid
   createdBy   User        @relation(fields: [createdById], references: [id], onDelete: Restrict)
 
+  clips       TextToSpeechClip[]
+
   @@index([provider])
   @@index([createdById])
   @@map("text_to_speech_models")
+}
+
+model TextToSpeechClip {
+  id              String            @id @default(uuid()) @db.Uuid
+  modelId         String            @map("model_id") @db.Uuid
+  model           TextToSpeechModel @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  cacheKey        String            @unique @map("cache_key")
+  providerModelId String            @map("provider_model_id")
+  voiceId         String            @map("voice_id")
+  text            String
+  audio           Bytes
+  mimeType        String            @map("mime_type")
+  byteSize        Int               @map("byte_size")
+  createdAt       DateTime          @default(now()) @map("created_at")
+
+  @@index([modelId])
+  @@map("text_to_speech_clips")
 }
 
 model DatasetSample {
