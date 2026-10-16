@@ -9,7 +9,12 @@ import {
   EncryptedSecret,
   secretHint,
 } from '../../common/crypto/credential-cipher';
-import { ConnectionTestResult, SpeechToTextProvider } from './speech-to-text-provider';
+import {
+  AudioInput,
+  ConnectionTestResult,
+  SpeechToTextProvider,
+  TranscriptionResult,
+} from './speech-to-text-provider';
 
 const modelIdSchema = z
   .string()
@@ -117,6 +122,36 @@ export class ElevenLabsProvider implements SpeechToTextProvider {
     };
   }
 
+  async transcribe(config: Record<string, unknown>, audio: AudioInput): Promise<TranscriptionResult> {
+    const stored = this.readStored(config);
+    const apiKey = decryptSecret(stored.apiKey, this.key());
+    const form = new FormData();
+    form.append('model_id', stored.modelId);
+    if (stored.languageCode) form.append('language_code', stored.languageCode);
+    form.append('file', new Blob([new Uint8Array(audio.buffer)], { type: audio.mimeType }), audio.filename);
+
+    let response: Response;
+    try {
+      response = await fetch('https://api.elevenlabs.io/v1/speech-to-text', {
+        method: 'POST',
+        headers: { 'xi-api-key': apiKey },
+        body: form,
+      });
+    } catch {
+      throw new BadRequestException('Could not reach ElevenLabs.');
+    }
+
+    if (!response.ok) {
+      throw new BadRequestException(await this.elevenLabsMessage(response));
+    }
+
+    const payload = (await response.json()) as { text?: unknown; language_code?: unknown };
+    return {
+      text: typeof payload.text === 'string' ? payload.text : '',
+      languageCode: typeof payload.language_code === 'string' ? payload.language_code : stored.languageCode,
+    };
+  }
+
   private store(apiKey: string, modelId: string, languageCode: string | null): StoredElevenLabsConfig {
     return {
       modelId,
@@ -141,6 +176,21 @@ export class ElevenLabsProvider implements SpeechToTextProvider {
       throw new BadRequestException('Stored ElevenLabs configuration is invalid.');
     }
     return config as unknown as StoredElevenLabsConfig;
+  }
+
+  private async elevenLabsMessage(response: Response) {
+    if (response.status === 401 || response.status === 403) {
+      return 'ElevenLabs rejected this API key.';
+    }
+    const raw = await response.text();
+    try {
+      const body = JSON.parse(raw) as { detail?: { message?: string } | string };
+      const detail = typeof body.detail === 'string' ? body.detail : body.detail?.message;
+      if (detail) return detail.slice(0, 300);
+    } catch {
+      return `ElevenLabs returned status ${response.status}.`;
+    }
+    return `ElevenLabs returned status ${response.status}.`;
   }
 
   private fieldMessage(issues: { path: PropertyKey[] }[]) {

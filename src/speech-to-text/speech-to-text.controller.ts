@@ -1,4 +1,6 @@
-import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AuthUser, CurrentUser } from '../common/decorators/current-user.decorator';
 import { CreateSpeechModelDto, TestDraftDto, UpdateSpeechModelDto } from './dto/speech-model.dto';
@@ -47,5 +49,15 @@ export class SpeechToTextController {
   @Post(':id/test')
   test(@Param('id', ParseUUIDPipe) id: string) {
     return this.models.testStored(id);
+  }
+
+  @Post(':id/transcribe')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @UseInterceptors(FileInterceptor('audio', { limits: { fileSize: 25 * 1024 * 1024 } }))
+  transcribe(
+    @Param('id', ParseUUIDPipe) id: string,
+    @UploadedFile() file: { buffer?: Buffer; size?: number; mimetype?: string; originalname?: string },
+  ) {
+    return this.models.transcribe(id, file);
   }
 }

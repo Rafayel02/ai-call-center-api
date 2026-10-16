@@ -14,6 +14,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
   catch(exception: unknown, host: ArgumentsHost) {
     const response = host.switchToHttp().getResponse<Response>();
+    if (this.isFileTooLarge(exception)) {
+      response.status(HttpStatus.PAYLOAD_TOO_LARGE).json({
+        statusCode: HttpStatus.PAYLOAD_TOO_LARGE,
+        message: 'Audio file must be 25 MB or smaller.',
+      });
+      return;
+    }
     const isHttp = exception instanceof HttpException;
     const status = isHttp ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
     const body = isHttp ? exception.getResponse() : null;
@@ -32,5 +39,14 @@ export class HttpExceptionFilter implements ExceptionFilter {
       statusCode: status,
       message,
     });
+  }
+
+  private isFileTooLarge(exception: unknown) {
+    return (
+      typeof exception === 'object' &&
+      exception !== null &&
+      'code' in exception &&
+      (exception as { code?: string }).code === 'LIMIT_FILE_SIZE'
+    );
   }
 }

@@ -1,8 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, SttProvider } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateSpeechModelDto, TestDraftDto, UpdateSpeechModelDto } from './dto/speech-model.dto';
 import { ProviderRegistry } from './providers/provider.registry';
+
+const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 
 @Injectable()
 export class SpeechToTextService {
@@ -70,6 +72,25 @@ export class SpeechToTextService {
   async testStored(id: string) {
     const model = await this.findOrThrow(id);
     return this.providers.get(model.provider).test(model.config as Record<string, unknown>);
+  }
+
+  async transcribe(id: string, file?: { buffer?: Buffer; size?: number; mimetype?: string; originalname?: string }) {
+    if (!file?.buffer?.length) throw new BadRequestException('Choose an audio file.');
+    if ((file.size ?? file.buffer.length) > MAX_AUDIO_BYTES) {
+      throw new BadRequestException('Audio file must be 25 MB or smaller.');
+    }
+    const mimeType = file.mimetype || 'application/octet-stream';
+    if (!/^(audio\/|video\/(webm|mp4|quicktime)|application\/octet-stream)/.test(mimeType)) {
+      throw new BadRequestException('Upload an audio file.');
+    }
+    const model = await this.findOrThrow(id);
+    if (!model.enabled) throw new BadRequestException('This model is disabled.');
+    const filename = (file.originalname || 'audio').replace(/[^\w.\-]+/g, '_').slice(0, 120);
+    return this.providers.get(model.provider).transcribe(model.config as Record<string, unknown>, {
+      buffer: file.buffer,
+      filename,
+      mimeType,
+    });
   }
 
   async testDraft(dto: TestDraftDto) {
