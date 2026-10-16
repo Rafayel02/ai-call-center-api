@@ -23,7 +23,8 @@ model User {
   role         Role     @default(ADMIN)
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
-  speechModels SpeechToTextModel[]
+  speechModels   SpeechToTextModel[]
+  datasetSamples DatasetSample[]
 
   @@map("users")
 }
@@ -42,4 +43,20 @@ model SpeechToTextModel {
   @@index([provider])
   @@index([createdById])
   @@map("speech_to_text_models")
+}
+
+model DatasetSample {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  transcript  String
+  audio       Bytes
+  mimeType    String   @map("mime_type")
+  filename    String
+  byteSize    Int      @map("byte_size")
+  createdAt   DateTime @default(now()) @map("created_at")
+  createdById String   @map("created_by") @db.Uuid
+  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([createdById])
+  @@map("dataset_samples")
 }
