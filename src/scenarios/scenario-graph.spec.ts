@@ -34,7 +34,7 @@ test('rejects a direct connection from start to end', () => {
   );
 });
 
-test('rejects a second start and a speech model id', () => {
+test('rejects a second start and a model id that is not a saved model', () => {
   assert.throws(
     () => parseScenarioGraph({ nodes: [start, { ...start, id: 'start-2' }], edges: [] }),
     /one Start/,
@@ -45,6 +45,16 @@ test('rejects a second start and a speech model id', () => {
         nodes: [{ ...speech, data: { modelId: 'voice-1', text: 'Hello' } }],
         edges: [],
       }),
-    /Speech models are not available yet/,
+    /Choose a text-to-speech model/,
   );
+});
+
+test('keeps a saved text-to-speech model id', () => {
+  const modelId = '11111111-1111-4111-8111-111111111111';
+  const graph = parseScenarioGraph({
+    nodes: [{ ...speech, data: { modelId, text: 'Hello' } }],
+    edges: [],
+  });
+  const data = graph.nodes[0]?.data;
+  assert.equal(data && 'modelId' in data ? data.modelId : null, modelId);
 });

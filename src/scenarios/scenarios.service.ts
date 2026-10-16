@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateScenarioDto } from './dto/create-scenario.dto';
@@ -56,6 +56,22 @@ export class ScenariosService {
 
   async saveGraph(id: string, dto: SaveScenarioGraphDto) {
     const graph = parseScenarioGraph(dto);
+    const modelIds = [
+      ...new Set(
+        graph.nodes.flatMap((node) =>
+          node.type === 'tts' && 'modelId' in node.data && node.data.modelId ? [node.data.modelId] : [],
+        ),
+      ),
+    ];
+    if (modelIds.length > 0) {
+      const found = await this.prisma.textToSpeechModel.findMany({
+        where: { id: { in: modelIds } },
+        select: { id: true },
+      });
+      if (found.length !== modelIds.length) {
+        throw new BadRequestException('Choose a text-to-speech model that exists.');
+      }
+    }
     try {
       const scenario = await this.prisma.scenario.update({
         where: { id },

@@ -8,7 +8,7 @@ export interface ScenarioGraphNode {
   id: string;
   type: ScenarioNodeType;
   position: { x: number; y: number };
-  data: { modelId: null; text: string } | Record<string, never>;
+  data: { modelId: string | null; text: string } | Record<string, never>;
 }
 
 export interface ScenarioGraphEdge {
@@ -116,17 +116,23 @@ function isCoordinate(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 100_000;
 }
 
-function parseTtsData(value: unknown): { modelId: null; text: string } {
+const MODEL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function parseTtsData(value: unknown): { modelId: string | null; text: string } {
   const data =
     value && typeof value === 'object' && !Array.isArray(value) ? (value as { modelId?: unknown; text?: unknown }) : {};
+  let modelId: string | null = null;
   if (data.modelId !== undefined && data.modelId !== null) {
-    throw new BadRequestException('Speech models are not available yet.');
+    if (typeof data.modelId !== 'string' || !MODEL_ID.test(data.modelId)) {
+      throw new BadRequestException('Choose a text-to-speech model.');
+    }
+    modelId = data.modelId;
   }
   const text = data.text === undefined ? '' : data.text;
   if (typeof text !== 'string' || text.length > 5000) {
     throw new BadRequestException('Text to speech can be at most 5000 characters.');
   }
-  return { modelId: null, text };
+  return { modelId, text };
 }
 
 function parseEdge(value: unknown, nodes: ScenarioGraphNode[]): ScenarioGraphEdge {

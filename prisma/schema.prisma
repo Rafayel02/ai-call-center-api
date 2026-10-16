@@ -16,6 +16,10 @@ enum SttProvider {
   HISPEECH
 }
 
+enum TtsProvider {
+  ELEVENLABS
+}
+
 model User {
   id           String   @id @default(uuid()) @db.Uuid
   email        String   @unique
@@ -23,7 +27,8 @@ model User {
   role         Role     @default(ADMIN)
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
-  speechModels   SpeechToTextModel[]
+  speechModels       SpeechToTextModel[]
+  textToSpeechModels TextToSpeechModel[]
   datasetSamples DatasetSample[]
   organizations  Organization[]
   scenarios      Scenario[]
@@ -78,6 +83,22 @@ model SpeechToTextModel {
   @@index([provider])
   @@index([createdById])
   @@map("speech_to_text_models")
+}
+
+model TextToSpeechModel {
+  id          String      @id @default(uuid()) @db.Uuid
+  name        String
+  provider    TtsProvider
+  config      Json
+  enabled     Boolean     @default(true)
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+  createdById String      @map("created_by") @db.Uuid
+  createdBy   User        @relation(fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([provider])
+  @@index([createdById])
+  @@map("text_to_speech_models")
 }
 
 model DatasetSample {

@@ -9,6 +9,7 @@ import { OrganizationsModule } from './organizations/organizations.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ScenariosModule } from './scenarios/scenarios.module';
 import { SpeechToTextModule } from './speech-to-text/speech-to-text.module';
+import { TextToSpeechModule } from './text-to-speech/text-to-speech.module';
 import { UsersModule } from './users/users.module';
 
 @Module({
@@ -19,6 +20,7 @@ import { UsersModule } from './users/users.module';
     AuthModule,
     UsersModule,
     SpeechToTextModule,
+    TextToSpeechModule,
     DatasetModule,
     OrganizationsModule,
     ScenariosModule,

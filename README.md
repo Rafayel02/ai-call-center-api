@@ -1,15 +1,16 @@
 # AI Call Center API
 
-NestJS API for the AI Call Center admin platform. It authenticates administrators, manages members, and stores speech-to-text provider configuration. Provider API keys are encrypted before they are written to PostgreSQL.
+NestJS API for the AI Call Center admin platform. It authenticates administrators, manages members, and stores speech provider configuration. Provider API keys are encrypted before they are written to PostgreSQL.
 
 ## Architecture
 
 - `auth` issues a 12-hour JWT in an httpOnly cookie. Production cookies are `Secure` and `SameSite=None` so the Vercel frontend can call this API. Bearer tokens are also accepted.
 - `users` lists and creates `ADMIN` accounts. There is no public registration. The first admin is created at startup from environment variables only when that email does not already exist. An existing account is never overwritten.
 - `speech-to-text` stores every provider in one `speech_to_text_models` table. Provider-specific fields live in a JSON config. `ProviderRegistry` selects an implementation such as `ElevenLabsProvider`.
+- `text-to-speech` stores every provider in one `text_to_speech_models` table. ElevenLabs is the only provider. A model keeps the encrypted API key, the ElevenLabs model id, and the voice. The browser asks this API to speak; it never receives the key.
 - `health` checks the process and runs `SELECT 1`.
 - `organizations` stores a name and an optional description. Members, speech models, and playground data are not tied to an organization. Names are unique ignoring case and extra spaces.
-- `scenarios` belong to an organization. Each one stores a name, an optional description, an icon, and a graph of Start, Text to speech, and End steps. Text to speech keeps the line to say. Speech model choice is empty until those models exist. Running a scenario is not implemented.
+- `scenarios` belong to an organization. Each one stores a name, an optional description, an icon, and a graph of Start, Text to speech, and End steps. Text to speech keeps the line to say and an optional text-to-speech model. Running a scenario is not implemented.
 
 Passwords are hashed with bcrypt. API keys use AES-256-GCM. List and detail responses return only the last four characters of a key.
 
