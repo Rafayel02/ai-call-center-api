@@ -80,7 +80,7 @@ export class SpeechToTextService {
       throw new BadRequestException('Audio file must be 25 MB or smaller.');
     }
     const mimeType = file.mimetype || 'application/octet-stream';
-    if (!/^(audio\/|video\/(webm|mp4|quicktime)|application\/octet-stream)/.test(mimeType)) {
+    if (!/^(audio\/|video\/|application\/octet-stream)/.test(mimeType)) {
       throw new BadRequestException('Upload an audio file.');
     }
     const model = await this.findOrThrow(id);

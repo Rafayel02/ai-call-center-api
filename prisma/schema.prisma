@@ -13,6 +13,7 @@ enum Role {
 
 enum SttProvider {
   ELEVENLABS
+  HISPEECH
 }
 
 model User {

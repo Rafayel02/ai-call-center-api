@@ -4,6 +4,7 @@ export interface PublicModelConfig {
   modelId: string;
   languageCode: string | null;
   apiKeyHint: string;
+  secureMode?: boolean;
 }
 
 export interface ConnectionTestResult {
