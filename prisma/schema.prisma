@@ -25,8 +25,23 @@ model User {
   updatedAt    DateTime @updatedAt @map("updated_at")
   speechModels   SpeechToTextModel[]
   datasetSamples DatasetSample[]
+  organizations  Organization[]
 
   @@map("users")
+}
+
+model Organization {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  nameKey     String   @unique @map("name_key")
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  createdById String   @map("created_by") @db.Uuid
+  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([createdById])
+  @@map("organizations")
 }
 
 model SpeechToTextModel {
