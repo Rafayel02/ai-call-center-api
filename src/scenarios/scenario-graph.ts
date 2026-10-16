@@ -1,0 +1,152 @@
+import { BadRequestException } from '@nestjs/common';
+
+export const SCENARIO_NODE_TYPES = ['start', 'end', 'tts'] as const;
+
+export type ScenarioNodeType = (typeof SCENARIO_NODE_TYPES)[number];
+
+export interface ScenarioGraphNode {
+  id: string;
+  type: ScenarioNodeType;
+  position: { x: number; y: number };
+  data: { modelId: null; text: string } | Record<string, never>;
+}
+
+export interface ScenarioGraphEdge {
+  id: string;
+  source: string;
+  target: string;
+}
+
+export interface ScenarioGraph {
+  nodes: ScenarioGraphNode[];
+  edges: ScenarioGraphEdge[];
+}
+
+const CONNECTIONS: Record<ScenarioNodeType, readonly ScenarioNodeType[]> = {
+  start: ['tts'],
+  end: [],
+  tts: ['tts', 'end'],
+};
+
+const ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
+
+export function emptyScenarioGraph(): ScenarioGraph {
+  return { nodes: [], edges: [] };
+}
+
+export function parseScenarioGraph(input: unknown): ScenarioGraph {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new BadRequestException('Scenario graph must include nodes and edges.');
+  }
+  const record = input as { nodes?: unknown; edges?: unknown };
+  if (!Array.isArray(record.nodes) || !Array.isArray(record.edges)) {
+    throw new BadRequestException('Scenario graph must include nodes and edges.');
+  }
+  if (record.nodes.length > 80 || record.edges.length > 160) {
+    throw new BadRequestException('This scenario has too many steps.');
+  }
+
+  const nodes = record.nodes.map(parseNode);
+  const ids = new Set<string>();
+  for (const node of nodes) {
+    if (ids.has(node.id)) throw new BadRequestException('Each step needs its own id.');
+    ids.add(node.id);
+  }
+  if (nodes.filter((node) => node.type === 'start').length > 1) {
+    throw new BadRequestException('A scenario can have one Start.');
+  }
+  if (nodes.filter((node) => node.type === 'end').length > 1) {
+    throw new BadRequestException('A scenario can have one End.');
+  }
+
+  const edges = record.edges.map((edge) => parseEdge(edge, nodes));
+  const edgeIds = new Set<string>();
+  const pairs = new Set<string>();
+  for (const edge of edges) {
+    if (edgeIds.has(edge.id)) throw new BadRequestException('Each connection needs its own id.');
+    edgeIds.add(edge.id);
+    const pair = `${edge.source}>${edge.target}`;
+    if (pairs.has(pair)) throw new BadRequestException('Those steps are already connected.');
+    pairs.add(pair);
+  }
+
+  nodes.sort((left, right) => left.id.localeCompare(right.id));
+  edges.sort((left, right) => left.id.localeCompare(right.id));
+  return { nodes, edges };
+}
+
+export function readScenarioGraph(value: unknown): ScenarioGraph {
+  try {
+    return parseScenarioGraph(value);
+  } catch {
+    return emptyScenarioGraph();
+  }
+}
+
+function parseNode(value: unknown): ScenarioGraphNode {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new BadRequestException('A scenario step is invalid.');
+  }
+  const node = value as { id?: unknown; type?: unknown; position?: unknown; data?: unknown };
+  if (typeof node.id !== 'string' || !ID_PATTERN.test(node.id)) {
+    throw new BadRequestException('A scenario step has an invalid id.');
+  }
+  if (node.type !== 'start' && node.type !== 'end' && node.type !== 'tts') {
+    throw new BadRequestException('A scenario step has an unknown type.');
+  }
+  const position = parsePosition(node.position);
+  if (node.type === 'tts') {
+    return { id: node.id, type: node.type, position, data: parseTtsData(node.data) };
+  }
+  return { id: node.id, type: node.type, position, data: {} };
+}
+
+function parsePosition(value: unknown): { x: number; y: number } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new BadRequestException('A scenario step has an invalid position.');
+  }
+  const position = value as { x?: unknown; y?: unknown };
+  if (!isCoordinate(position.x) || !isCoordinate(position.y)) {
+    throw new BadRequestException('A scenario step has an invalid position.');
+  }
+  return { x: Math.round(position.x), y: Math.round(position.y) };
+}
+
+function isCoordinate(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 100_000;
+}
+
+function parseTtsData(value: unknown): { modelId: null; text: string } {
+  const data =
+    value && typeof value === 'object' && !Array.isArray(value) ? (value as { modelId?: unknown; text?: unknown }) : {};
+  if (data.modelId !== undefined && data.modelId !== null) {
+    throw new BadRequestException('Speech models are not available yet.');
+  }
+  const text = data.text === undefined ? '' : data.text;
+  if (typeof text !== 'string' || text.length > 5000) {
+    throw new BadRequestException('Text to speech can be at most 5000 characters.');
+  }
+  return { modelId: null, text };
+}
+
+function parseEdge(value: unknown, nodes: ScenarioGraphNode[]): ScenarioGraphEdge {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new BadRequestException('A scenario connection is invalid.');
+  }
+  const edge = value as { id?: unknown; source?: unknown; target?: unknown };
+  if (typeof edge.id !== 'string' || !ID_PATTERN.test(edge.id)) {
+    throw new BadRequestException('A scenario connection has an invalid id.');
+  }
+  if (typeof edge.source !== 'string' || typeof edge.target !== 'string') {
+    throw new BadRequestException('A scenario connection is invalid.');
+  }
+  const source = nodes.find((node) => node.id === edge.source);
+  const target = nodes.find((node) => node.id === edge.target);
+  if (!source || !target) {
+    throw new BadRequestException('A connection points at a missing step.');
+  }
+  if (!CONNECTIONS[source.type].includes(target.type)) {
+    throw new BadRequestException('Connect Start to Text to speech, and Text to speech to End.');
+  }
+  return { id: edge.id, source: edge.source, target: edge.target };
+}

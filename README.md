@@ -8,7 +8,8 @@ NestJS API for the AI Call Center admin platform. It authenticates administrator
 - `users` lists and creates `ADMIN` accounts. There is no public registration. The first admin is created at startup from environment variables only when that email does not already exist. An existing account is never overwritten.
 - `speech-to-text` stores every provider in one `speech_to_text_models` table. Provider-specific fields live in a JSON config. `ProviderRegistry` selects an implementation such as `ElevenLabsProvider`.
 - `health` checks the process and runs `SELECT 1`.
-- `organizations` stores a name and an optional description. Members, speech models, and playground data are not tied to an organization. Organization-specific scenarios will use this record later. Names are unique ignoring case and extra spaces.
+- `organizations` stores a name and an optional description. Members, speech models, and playground data are not tied to an organization. Names are unique ignoring case and extra spaces.
+- `scenarios` belong to an organization. Each one stores a name, an optional description, an icon, and a graph of Start, Text to speech, and End steps. Text to speech keeps the line to say. Speech model choice is empty until those models exist. Running a scenario is not implemented.
 
 Passwords are hashed with bcrypt. API keys use AES-256-GCM. List and detail responses return only the last four characters of a key.
 

@@ -26,6 +26,7 @@ model User {
   speechModels   SpeechToTextModel[]
   datasetSamples DatasetSample[]
   organizations  Organization[]
+  scenarios      Scenario[]
 
   @@map("users")
 }
@@ -37,11 +38,30 @@ model Organization {
   description String?
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
-  createdById String   @map("created_by") @db.Uuid
-  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  createdById String     @map("created_by") @db.Uuid
+  createdBy   User       @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  scenarios   Scenario[]
 
   @@index([createdById])
   @@map("organizations")
+}
+
+model Scenario {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  name           String
+  description    String?
+  icon           String
+  graph          Json
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  createdById    String       @map("created_by") @db.Uuid
+  createdBy      User         @relation(fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([organizationId])
+  @@index([createdById])
+  @@map("scenarios")
 }
 
 model SpeechToTextModel {
