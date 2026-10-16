@@ -3,6 +3,7 @@ import { Prisma, SttProvider } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateSpeechModelDto, TestDraftDto, UpdateSpeechModelDto } from './dto/speech-model.dto';
 import { ProviderRegistry } from './providers/provider.registry';
+import { SpeechToTextProvider } from './providers/speech-to-text-provider';
 
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 
@@ -71,7 +72,8 @@ export class SpeechToTextService {
 
   async testStored(id: string) {
     const model = await this.findOrThrow(id);
-    return this.providers.get(model.provider).test(model.config as Record<string, unknown>);
+    const provider = this.providers.get(model.provider);
+    return this.runTest(provider, model.config as Record<string, unknown>);
   }
 
   async transcribe(id: string, file?: { buffer?: Buffer; size?: number; mimetype?: string; originalname?: string }) {
@@ -96,6 +98,13 @@ export class SpeechToTextService {
   async testDraft(dto: TestDraftDto) {
     const provider = this.providers.get(dto.provider);
     const config = provider.validateCreate(dto.config);
+    return this.runTest(provider, config);
+  }
+
+  private runTest(provider: SpeechToTextProvider, config: Record<string, unknown>) {
+    if (!provider.supportsConnectionTest || !provider.test) {
+      throw new BadRequestException('This provider has no connection check.');
+    }
     return provider.test(config);
   }
 

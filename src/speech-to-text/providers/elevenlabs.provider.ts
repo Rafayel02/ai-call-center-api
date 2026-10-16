@@ -55,6 +55,7 @@ interface StoredElevenLabsConfig {
 @Injectable()
 export class ElevenLabsProvider implements SpeechToTextProvider {
   readonly id = SttProvider.ELEVENLABS;
+  readonly supportsConnectionTest = true;
 
   constructor(private readonly configService: ConfigService) {}
 
@@ -115,11 +116,7 @@ export class ElevenLabsProvider implements SpeechToTextProvider {
     if (!response.ok) {
       return { ok: false, message: `ElevenLabs returned status ${response.status}.` };
     }
-    return {
-      ok: true,
-      message:
-        'ElevenLabs accepted this API key. This check does not run a transcription, so it does not confirm speech-to-text billing or audio processing.',
-    };
+    return { ok: true, message: 'ElevenLabs accepted this API key.' };
   }
 
   async transcribe(config: Record<string, unknown>, audio: AudioInput): Promise<TranscriptionResult> {

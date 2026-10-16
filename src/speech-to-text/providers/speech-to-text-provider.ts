@@ -25,9 +25,10 @@ export interface TranscriptionResult {
 
 export interface SpeechToTextProvider {
   readonly id: SttProvider;
+  readonly supportsConnectionTest: boolean;
   validateCreate(config: unknown): Record<string, unknown>;
   validateUpdate(config: unknown, existing: Record<string, unknown>): Record<string, unknown>;
   toPublic(config: Record<string, unknown>): PublicModelConfig;
-  test(config: Record<string, unknown>): Promise<ConnectionTestResult>;
+  test?(config: Record<string, unknown>): Promise<ConnectionTestResult>;
   transcribe(config: Record<string, unknown>, audio: AudioInput): Promise<TranscriptionResult>;
 }

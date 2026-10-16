@@ -9,12 +9,7 @@ import {
   EncryptedSecret,
   secretHint,
 } from '../../common/crypto/credential-cipher';
-import {
-  AudioInput,
-  ConnectionTestResult,
-  SpeechToTextProvider,
-  TranscriptionResult,
-} from './speech-to-text-provider';
+import { AudioInput, SpeechToTextProvider, TranscriptionResult } from './speech-to-text-provider';
 
 const MODELS = ['model-23012026', 'model-01052025'] as const;
 
@@ -51,6 +46,7 @@ interface StoredHiSpeechConfig {
 @Injectable()
 export class HiSpeechProvider implements SpeechToTextProvider {
   readonly id = SttProvider.HISPEECH;
+  readonly supportsConnectionTest = false;
 
   constructor(private readonly configService: ConfigService) {}
 
@@ -86,31 +82,6 @@ export class HiSpeechProvider implements SpeechToTextProvider {
       languageCode: null,
       apiKeyHint: stored.apiKeyHint,
       secureMode: stored.secureMode,
-    };
-  }
-
-  async test(config: Record<string, unknown>): Promise<ConnectionTestResult> {
-    const apiKey = decryptSecret(this.readStored(config).apiKey, this.key());
-    let response: Response;
-    try {
-      response = await fetch(
-        'https://api.hispeech.ai/api/v1/transcriptions/transcription-status/00000000-0000-0000-0000-000000000000',
-        { headers: { 'x-auth-token': apiKey } },
-      );
-    } catch {
-      return { ok: false, message: 'Could not reach HiSpeech.' };
-    }
-
-    const raw = await response.text();
-    if (response.status === 401 || response.status === 403 || /invalid token|access denied|no token/i.test(raw)) {
-      return { ok: false, message: 'HiSpeech rejected this API key.' };
-    }
-    if (response.status >= 500) {
-      return { ok: false, message: `HiSpeech returned status ${response.status}.` };
-    }
-    return {
-      ok: true,
-      message: 'HiSpeech accepted this API key. This check does not run a transcription.',
     };
   }
 
