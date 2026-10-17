@@ -15,6 +15,8 @@ export interface ConnectionTestResult {
 export interface LlmCompletionRequest {
   messages: ConversationMessage[];
   note?: string;
+  topics?: RouteTopic[];
+  defaultTopicId?: string;
 }
 
 export interface LlmRouteRequest {

@@ -75,4 +75,14 @@ export class CompleteTurnDto {
   @IsString()
   @MaxLength(1000)
   note?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(8)
+  topics?: unknown[];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  defaultTopicId?: string;
 }

@@ -14,12 +14,31 @@ const messageSchema = z.object({
   interrupted: z.boolean().optional(),
 });
 
-const completeSchema = z.object({
-  messages: z.array(messageSchema).min(1).max(40),
-  note: z.string().trim().max(1000).optional(),
-});
-
 const topicIdSchema = z.string().trim().regex(/^[A-Za-z0-9_-]{1,80}$/);
+
+const completeSchema = z
+  .object({
+    messages: z.array(messageSchema).min(1).max(40),
+    note: z.string().trim().max(1000).optional(),
+    topics: z
+      .array(
+        z.object({
+          id: topicIdSchema,
+          description: z.string().trim().min(1).max(240),
+        }),
+      )
+      .max(8)
+      .optional(),
+    defaultTopicId: topicIdSchema.optional(),
+  })
+  .superRefine((value, context) => {
+    const topics = value.topics ?? [];
+    if (topics.length === 0) return;
+    const ids = new Set(topics.map((topic) => topic.id));
+    if (!value.defaultTopicId || ids.size !== topics.length || ids.has(value.defaultTopicId)) {
+      context.addIssue({ code: 'custom', message: 'Each topic needs its own id.', path: ['topics'] });
+    }
+  });
 
 const routeSchema = z.object({
   inquiry: z.string().trim().max(500).optional(),
@@ -109,7 +128,8 @@ export class LlmService {
   async complete(id: string, dto: CompleteTurnDto) {
     const parsed = completeSchema.safeParse(dto);
     if (!parsed.success) {
-      throw new BadRequestException('Include the conversation.');
+      const topicIssue = parsed.error.issues.some((issue) => issue.path[0] === 'topics' || issue.path[0] === 'defaultTopicId');
+      throw new BadRequestException(topicIssue ? 'Describe each topic before choosing a direction.' : 'Include the conversation.');
     }
     const model = await this.findOrThrow(id);
     if (!model.enabled) throw new BadRequestException('This model is disabled.');
@@ -121,6 +141,8 @@ export class LlmService {
     return this.providers.get(model.provider).complete(model.config as Record<string, unknown>, {
       messages,
       note: parsed.data.note,
+      topics: parsed.data.topics,
+      defaultTopicId: parsed.data.defaultTopicId,
     });
   }
 

@@ -27,6 +27,20 @@ const updateSchema = z.object({
   modelId: modelIdSchema.optional(),
 });
 
+function inquiryResponseSchema(topics: Array<{ id: string }> | undefined, defaultTopicId: string | undefined) {
+  const properties: Record<string, unknown> = {
+    reply: { type: 'string' },
+    inquiry: { type: ['string', 'null'] },
+    phase: { type: 'string', enum: ['clarify', 'confirm', 'accepted'] },
+  };
+  const required = ['reply', 'inquiry', 'phase'];
+  if (topics && topics.length > 0 && defaultTopicId) {
+    properties.topicId = { type: 'string', enum: [...topics.map((topic) => topic.id), defaultTopicId] };
+    required.push('topicId');
+  }
+  return { type: 'object', additionalProperties: false, properties, required };
+}
+
 interface StoredOpenAiConfig {
   modelId: (typeof OPENAI_MODEL_IDS)[number];
   apiKeyHint: string;
@@ -101,7 +115,7 @@ export class OpenAiProvider implements LlmProviderClient {
           temperature: 0.3,
           max_completion_tokens: 400,
           messages: [
-            { role: 'system', content: inquirySystemPrompt(request.note) },
+            { role: 'system', content: inquirySystemPrompt(request.note, request.topics, request.defaultTopicId) },
             ...request.messages.map((message) => ({
               role: message.role,
               content: message.interrupted
@@ -114,16 +128,7 @@ export class OpenAiProvider implements LlmProviderClient {
             json_schema: {
               name: 'inquiry_turn',
               strict: true,
-              schema: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  reply: { type: 'string' },
-                  inquiry: { type: ['string', 'null'] },
-                  phase: { type: 'string', enum: ['clarify', 'confirm', 'accepted'] },
-                },
-                required: ['reply', 'inquiry', 'phase'],
-              },
+              schema: inquiryResponseSchema(request.topics, request.defaultTopicId),
             },
           },
         }),
@@ -152,7 +157,8 @@ export class OpenAiProvider implements LlmProviderClient {
     } catch {
       throw new BadRequestException('OpenAI returned an unreadable reply.');
     }
-    return readInquiryTurn(parsed);
+    const allowed = request.defaultTopicId ? [...(request.topics ?? []).map((topic) => topic.id), request.defaultTopicId] : undefined;
+    return readInquiryTurn(parsed, allowed, request.defaultTopicId);
   }
 
   async route(config: Record<string, unknown>, request: LlmRouteRequest) {

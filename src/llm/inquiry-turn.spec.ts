@@ -11,6 +11,7 @@ test('an empty confirmation question states the inquiry', () => {
     reply: 'So you want move the appointment to 3?',
     inquiry: 'move the appointment to 3',
     phase: 'confirm',
+    topicId: null,
   });
 });
 
@@ -22,8 +23,17 @@ test('accepted is kept only with an inquiry', () => {
 
 test('the system prompt keeps earlier lines in mind and notes an interruption', () => {
   const prompt = inquirySystemPrompt('The caller spoke again before you answered.');
+  assert.match(prompt, /Do not answer their question/);
   assert.match(prompt, /Do not greet again/);
   assert.match(prompt, /So you want/);
   assert.match(prompt, /accepted/);
   assert.match(prompt, /The caller spoke again before you answered/);
+});
+
+test('the system prompt includes the topics the call can be routed to', () => {
+  const prompt = inquirySystemPrompt(undefined, [{ id: 'hours', description: 'User asks for working hours' }], 'default');
+  assert.match(prompt, /Do not give the address/);
+  assert.match(prompt, /hours: User asks for working hours/);
+  assert.match(prompt, /default: anything that does not match/);
+  assert.equal(readInquiryTurn({ reply: 'Okay.', inquiry: 'the office location', phase: 'accepted', topicId: 'missing' }, ['hours', 'default'], 'default').topicId, 'default');
 });
