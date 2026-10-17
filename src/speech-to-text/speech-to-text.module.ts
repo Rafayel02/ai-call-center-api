@@ -8,5 +8,6 @@ import { SpeechToTextService } from './speech-to-text.service';
 @Module({
   controllers: [SpeechToTextController],
   providers: [SpeechToTextService, ProviderRegistry, ElevenLabsProvider, HiSpeechProvider],
+  exports: [ProviderRegistry],
 })
 export class SpeechToTextModule {}

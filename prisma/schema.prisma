@@ -135,8 +135,23 @@ model DatasetSample {
   createdAt   DateTime @default(now()) @map("created_at")
   createdById String   @map("created_by") @db.Uuid
   createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  speechToTextResults SpeechToTextResult[]
 
   @@index([createdById])
   @@index([source])
   @@map("dataset_samples")
+}
+
+model SpeechToTextResult {
+  id           String        @id @default(uuid()) @db.Uuid
+  engineKey    String        @map("engine_key")
+  sampleId     String        @map("sample_id") @db.Uuid
+  sample       DatasetSample @relation(fields: [sampleId], references: [id], onDelete: Cascade)
+  transcript   String
+  languageCode String?       @map("language_code")
+  createdAt    DateTime      @default(now()) @map("created_at")
+
+  @@unique([engineKey, sampleId])
+  @@index([sampleId])
+  @@map("speech_to_text_results")
 }

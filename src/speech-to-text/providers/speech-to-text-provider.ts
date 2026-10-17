@@ -29,6 +29,8 @@ export interface SpeechToTextProvider {
   validateCreate(config: unknown): Record<string, unknown>;
   validateUpdate(config: unknown, existing: Record<string, unknown>): Record<string, unknown>;
   toPublic(config: Record<string, unknown>): PublicModelConfig;
+  /** Settings that decide the transcript. Never includes the API key, so checks survive key changes. */
+  engineKey(config: Record<string, unknown>): string;
   test?(config: Record<string, unknown>): Promise<ConnectionTestResult>;
   transcribe(config: Record<string, unknown>, audio: AudioInput): Promise<TranscriptionResult>;
 }
