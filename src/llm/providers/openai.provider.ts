@@ -1,0 +1,201 @@
+import { BadRequestException, Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { LlmProvider } from '@prisma/client';
+import { z } from 'zod';
+import {
+  decryptSecret,
+  encryptSecret,
+  encryptionKeyFromEnv,
+  EncryptedSecret,
+  secretHint,
+} from '../../common/crypto/credential-cipher';
+import { inquirySystemPrompt, readInquiryTurn } from '../inquiry-turn';
+import { ConnectionTestResult, LlmCompletionRequest, LlmProviderClient } from './llm-provider';
+
+export const OPENAI_MODEL_IDS = ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1'] as const;
+
+const modelIdSchema = z.enum(OPENAI_MODEL_IDS);
+
+const createSchema = z.object({
+  apiKey: z.string().trim().min(20).max(500),
+  modelId: modelIdSchema,
+});
+
+const updateSchema = z.object({
+  apiKey: z.string().trim().min(20).max(500).optional(),
+  modelId: modelIdSchema.optional(),
+});
+
+interface StoredOpenAiConfig {
+  modelId: (typeof OPENAI_MODEL_IDS)[number];
+  apiKeyHint: string;
+  apiKey: EncryptedSecret;
+}
+
+@Injectable()
+export class OpenAiProvider implements LlmProviderClient {
+  readonly id = LlmProvider.OPENAI;
+  readonly supportsConnectionTest = true;
+
+  constructor(private readonly configService: ConfigService) {}
+
+  validateCreate(config: unknown): Record<string, unknown> {
+    const parsed = createSchema.safeParse(config ?? {});
+    if (!parsed.success) {
+      throw new BadRequestException(this.fieldMessage(parsed.error.issues));
+    }
+    return this.store(parsed.data.apiKey, parsed.data.modelId) as unknown as Record<string, unknown>;
+  }
+
+  validateUpdate(config: unknown, existing: Record<string, unknown>): Record<string, unknown> {
+    const current = this.readStored(existing);
+    const parsed = updateSchema.safeParse(config ?? {});
+    if (!parsed.success) {
+      throw new BadRequestException(this.fieldMessage(parsed.error.issues));
+    }
+    if (!parsed.data.apiKey) {
+      return { ...current, modelId: parsed.data.modelId ?? current.modelId } as unknown as Record<string, unknown>;
+    }
+    return this.store(parsed.data.apiKey, parsed.data.modelId ?? current.modelId) as unknown as Record<string, unknown>;
+  }
+
+  toPublic(config: Record<string, unknown>) {
+    const stored = this.readStored(config);
+    return { modelId: stored.modelId, apiKeyHint: stored.apiKeyHint };
+  }
+
+  async test(config: Record<string, unknown>): Promise<ConnectionTestResult> {
+    const stored = this.readStored(config);
+    const apiKey = decryptSecret(stored.apiKey, this.key());
+    let response: Response;
+    try {
+      response = await fetch('https://api.openai.com/v1/models', {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+    } catch {
+      return { ok: false, message: 'Could not reach OpenAI.' };
+    }
+    if (response.status === 401 || response.status === 403) {
+      return { ok: false, message: 'OpenAI rejected this API key.' };
+    }
+    if (!response.ok) {
+      return { ok: false, message: `OpenAI returned status ${response.status}.` };
+    }
+    return { ok: true, message: 'OpenAI accepted this API key.' };
+  }
+
+  async complete(config: Record<string, unknown>, request: LlmCompletionRequest) {
+    const stored = this.readStored(config);
+    const apiKey = decryptSecret(stored.apiKey, this.key());
+    let response: Response;
+    try {
+      response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: stored.modelId,
+          temperature: 0.3,
+          max_completion_tokens: 400,
+          messages: [
+            { role: 'system', content: inquirySystemPrompt(request.note) },
+            ...request.messages.map((message) => ({
+              role: message.role,
+              content: message.interrupted
+                ? `${message.content}\n[interrupted: the caller spoke over this and may not have heard it fully]`
+                : message.content,
+            })),
+          ],
+          response_format: {
+            type: 'json_schema',
+            json_schema: {
+              name: 'inquiry_turn',
+              strict: true,
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  reply: { type: 'string' },
+                  inquiry: { type: ['string', 'null'] },
+                  phase: { type: 'string', enum: ['clarify', 'confirm', 'accepted'] },
+                },
+                required: ['reply', 'inquiry', 'phase'],
+              },
+            },
+          },
+        }),
+      });
+    } catch {
+      throw new BadRequestException('Could not reach OpenAI.');
+    }
+
+    if (!response.ok) {
+      throw new BadRequestException(await this.openAiMessage(response));
+    }
+
+    const payload = (await response.json()) as {
+      choices?: Array<{ message?: { content?: unknown; refusal?: unknown } }>;
+    };
+    const message = payload.choices?.[0]?.message;
+    if (message && typeof message.refusal === 'string' && message.refusal.trim()) {
+      throw new BadRequestException('OpenAI refused this turn.');
+    }
+    if (!message || typeof message.content !== 'string' || !message.content.trim()) {
+      throw new BadRequestException('OpenAI did not return a reply.');
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(message.content);
+    } catch {
+      throw new BadRequestException('OpenAI returned an unreadable reply.');
+    }
+    return readInquiryTurn(parsed);
+  }
+
+  private store(apiKey: string, modelId: StoredOpenAiConfig['modelId']): StoredOpenAiConfig {
+    return {
+      modelId,
+      apiKeyHint: secretHint(apiKey),
+      apiKey: encryptSecret(apiKey, this.key()),
+    };
+  }
+
+  private key() {
+    return encryptionKeyFromEnv(this.configService.getOrThrow<string>('CREDENTIAL_ENCRYPTION_KEY'));
+  }
+
+  private readStored(config: Record<string, unknown>): StoredOpenAiConfig {
+    const apiKey = config.apiKey;
+    if (
+      typeof config.modelId !== 'string' ||
+      !(OPENAI_MODEL_IDS as readonly string[]).includes(config.modelId) ||
+      !apiKey ||
+      typeof apiKey !== 'object' ||
+      !('ciphertext' in apiKey)
+    ) {
+      throw new BadRequestException('Stored OpenAI configuration is invalid.');
+    }
+    return config as unknown as StoredOpenAiConfig;
+  }
+
+  private async openAiMessage(response: Response) {
+    if (response.status === 401 || response.status === 403) {
+      return 'OpenAI rejected this API key.';
+    }
+    const raw = await response.text();
+    try {
+      const body = JSON.parse(raw) as { error?: { message?: string } };
+      if (body.error?.message) return body.error.message.slice(0, 300);
+    } catch {
+      return `OpenAI returned status ${response.status}.`;
+    }
+    return `OpenAI returned status ${response.status}.`;
+  }
+
+  private fieldMessage(issues: { path: PropertyKey[] }[]) {
+    const fields = issues.map((issue) => issue.path.join('.') || 'config').join(', ');
+    return `Invalid OpenAI configuration: ${fields}.`;
+  }
+}

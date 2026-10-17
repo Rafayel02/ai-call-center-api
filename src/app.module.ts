@@ -5,6 +5,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AuthModule } from './auth/auth.module';
 import { DatasetModule } from './dataset/dataset.module';
 import { HealthModule } from './health/health.module';
+import { LlmModule } from './llm/llm.module';
 import { OrganizationsModule } from './organizations/organizations.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ScenariosModule } from './scenarios/scenarios.module';
@@ -23,6 +24,7 @@ import { UsersModule } from './users/users.module';
     SpeechToTextModule,
     SpeechToTextComparisonModule,
     TextToSpeechModule,
+    LlmModule,
     DatasetModule,
     OrganizationsModule,
     ScenariosModule,

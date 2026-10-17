@@ -1,15 +1,27 @@
 import { BadRequestException } from '@nestjs/common';
 
-export const SCENARIO_NODE_TYPES = ['start', 'end', 'tts'] as const;
+export const SCENARIO_NODE_TYPES = ['start', 'end', 'tts', 'loop'] as const;
 
 export type ScenarioNodeType = (typeof SCENARIO_NODE_TYPES)[number];
 
-export interface ScenarioGraphNode {
-  id: string;
-  type: ScenarioNodeType;
-  position: { x: number; y: number };
-  data: { modelId: string | null; text: string } | Record<string, never>;
+export interface TtsNodeData {
+  modelId: string | null;
+  text: string;
 }
+
+export interface LoopNodeData {
+  sttModelId: string | null;
+  ttsModelId: string | null;
+  llmModelId: string | null;
+  silenceSeconds: number;
+  fillers: string[];
+  maxTurns: number;
+}
+
+export type ScenarioGraphNode =
+  | { id: string; type: 'start' | 'end'; position: { x: number; y: number }; data: Record<string, never> }
+  | { id: string; type: 'tts'; position: { x: number; y: number }; data: TtsNodeData }
+  | { id: string; type: 'loop'; position: { x: number; y: number }; data: LoopNodeData };
 
 export interface ScenarioGraphEdge {
   id: string;
@@ -23,9 +35,10 @@ export interface ScenarioGraph {
 }
 
 const CONNECTIONS: Record<ScenarioNodeType, readonly ScenarioNodeType[]> = {
-  start: ['tts'],
+  start: ['tts', 'loop'],
   end: [],
-  tts: ['tts', 'end'],
+  tts: ['tts', 'loop', 'end'],
+  loop: ['tts', 'loop', 'end'],
 };
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
@@ -91,12 +104,15 @@ function parseNode(value: unknown): ScenarioGraphNode {
   if (typeof node.id !== 'string' || !ID_PATTERN.test(node.id)) {
     throw new BadRequestException('A scenario step has an invalid id.');
   }
-  if (node.type !== 'start' && node.type !== 'end' && node.type !== 'tts') {
+  if (node.type !== 'start' && node.type !== 'end' && node.type !== 'tts' && node.type !== 'loop') {
     throw new BadRequestException('A scenario step has an unknown type.');
   }
   const position = parsePosition(node.position);
   if (node.type === 'tts') {
     return { id: node.id, type: node.type, position, data: parseTtsData(node.data) };
+  }
+  if (node.type === 'loop') {
+    return { id: node.id, type: node.type, position, data: parseLoopData(node.data) };
   }
   return { id: node.id, type: node.type, position, data: {} };
 }
@@ -117,6 +133,55 @@ function isCoordinate(value: unknown): value is number {
 }
 
 const MODEL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function parseLoopData(value: unknown): LoopNodeData {
+  const data = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  return {
+    sttModelId: parseModelId(data.sttModelId, 'Choose a speech-to-text model.'),
+    ttsModelId: parseModelId(data.ttsModelId, 'Choose a text-to-speech model.'),
+    llmModelId: parseModelId(data.llmModelId, 'Choose an LLM.'),
+    silenceSeconds: parseBoundedInt(data.silenceSeconds, 4, 1, 30, 'Silence must be between 1 and 30 seconds.'),
+    fillers: parseFillers(data.fillers),
+    maxTurns: parseBoundedInt(data.maxTurns, 8, 1, 20, 'Max turns must be between 1 and 20.'),
+  };
+}
+
+function parseModelId(value: unknown, message: string): string | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || !MODEL_ID.test(value)) {
+    throw new BadRequestException(message);
+  }
+  return value;
+}
+
+function parseBoundedInt(value: unknown, fallback: number, min: number, max: number, message: string): number {
+  if (value === undefined || value === null || value === '') return fallback;
+  const number = typeof value === 'number' ? value : Number.NaN;
+  const rounded = Math.round(number);
+  if (!Number.isFinite(number) || rounded < min || rounded > max) {
+    throw new BadRequestException(message);
+  }
+  return rounded;
+}
+
+function parseFillers(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new BadRequestException('Delay lines must be a list.');
+  }
+  if (value.length > 8) {
+    throw new BadRequestException('A conversational loop can have at most 8 delay lines.');
+  }
+  const fillers: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string' || item.trim().length > 200) {
+      throw new BadRequestException('Each delay line can be at most 200 characters.');
+    }
+    const trimmed = item.trim();
+    if (trimmed) fillers.push(trimmed);
+  }
+  return fillers;
+}
 
 function parseTtsData(value: unknown): { modelId: string | null; text: string } {
   const data =
@@ -152,7 +217,7 @@ function parseEdge(value: unknown, nodes: ScenarioGraphNode[]): ScenarioGraphEdg
     throw new BadRequestException('A connection points at a missing step.');
   }
   if (!CONNECTIONS[source.type].includes(target.type)) {
-    throw new BadRequestException('Connect Start to Text to speech, and Text to speech to End.');
+    throw new BadRequestException('Connect Start to Text to speech or Conversational Loop, then continue through to End.');
   }
   return { id: edge.id, source: edge.source, target: edge.target };
 }
