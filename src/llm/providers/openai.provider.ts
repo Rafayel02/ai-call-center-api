@@ -100,7 +100,7 @@ export class OpenAiProvider implements LlmProviderClient {
           temperature: 0.3,
           max_completion_tokens: 400,
           messages: [
-            { role: 'system', content: inquirySystemPrompt(request.instructions, request.note) },
+            { role: 'system', content: inquirySystemPrompt(request.note) },
             ...request.messages.map((message) => ({
               role: message.role,
               content: message.interrupted

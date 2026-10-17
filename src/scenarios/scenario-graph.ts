@@ -15,7 +15,6 @@ export interface LoopNodeData {
   llmModelId: string | null;
   silenceSeconds: number;
   fillers: string[];
-  instructions: string;
   maxTurns: number;
 }
 
@@ -143,7 +142,6 @@ function parseLoopData(value: unknown): LoopNodeData {
     llmModelId: parseModelId(data.llmModelId, 'Choose an LLM.'),
     silenceSeconds: parseBoundedInt(data.silenceSeconds, 4, 1, 30, 'Silence must be between 1 and 30 seconds.'),
     fillers: parseFillers(data.fillers),
-    instructions: parseInstructions(data.instructions),
     maxTurns: parseBoundedInt(data.maxTurns, 8, 1, 20, 'Max turns must be between 1 and 20.'),
   };
 }
@@ -183,14 +181,6 @@ function parseFillers(value: unknown): string[] {
     if (trimmed) fillers.push(trimmed);
   }
   return fillers;
-}
-
-function parseInstructions(value: unknown): string {
-  if (value === undefined || value === null) return '';
-  if (typeof value !== 'string' || value.length > 4000) {
-    throw new BadRequestException('Instructions can be at most 4000 characters.');
-  }
-  return value;
 }
 
 function parseTtsData(value: unknown): { modelId: string | null; text: string } {

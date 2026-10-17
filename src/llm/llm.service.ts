@@ -14,7 +14,6 @@ const messageSchema = z.object({
 });
 
 const completeSchema = z.object({
-  instructions: z.string().trim().min(1).max(4000),
   messages: z.array(messageSchema).min(1).max(40),
   note: z.string().trim().max(1000).optional(),
 });
@@ -93,7 +92,7 @@ export class LlmService {
   async complete(id: string, dto: CompleteTurnDto) {
     const parsed = completeSchema.safeParse(dto);
     if (!parsed.success) {
-      throw new BadRequestException('Describe the inquiry and include the conversation.');
+      throw new BadRequestException('Include the conversation.');
     }
     const model = await this.findOrThrow(id);
     if (!model.enabled) throw new BadRequestException('This model is disabled.');
@@ -103,7 +102,6 @@ export class LlmService {
       interrupted: message.interrupted,
     }));
     return this.providers.get(model.provider).complete(model.config as Record<string, unknown>, {
-      instructions: parsed.data.instructions,
       messages,
       note: parsed.data.note,
     });

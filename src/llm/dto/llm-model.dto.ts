@@ -43,9 +43,10 @@ export class TestLlmDraftDto {
 }
 
 export class CompleteTurnDto {
+  @IsOptional()
   @IsString()
   @MaxLength(4000)
-  instructions!: string;
+  instructions?: string;
 
   @IsArray()
   @ArrayMaxSize(40)

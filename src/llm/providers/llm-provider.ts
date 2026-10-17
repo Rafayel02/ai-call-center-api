@@ -12,7 +12,6 @@ export interface ConnectionTestResult {
 }
 
 export interface LlmCompletionRequest {
-  instructions: string;
   messages: ConversationMessage[];
   note?: string;
 }

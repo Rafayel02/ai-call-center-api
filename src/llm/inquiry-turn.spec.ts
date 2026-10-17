@@ -20,9 +20,9 @@ test('accepted is kept only with an inquiry', () => {
   assert.equal(turn.inquiry, 'a refund for order 12');
 });
 
-test('the system prompt includes the interruption note and the confirmation rule', () => {
-  const prompt = inquirySystemPrompt('Find the booking they mean.', 'The caller spoke again before you answered.');
-  assert.match(prompt, /Find the booking they mean/);
+test('the system prompt keeps earlier lines in mind and notes an interruption', () => {
+  const prompt = inquirySystemPrompt('The caller spoke again before you answered.');
+  assert.match(prompt, /Do not greet again/);
   assert.match(prompt, /So you want/);
   assert.match(prompt, /accepted/);
   assert.match(prompt, /The caller spoke again before you answered/);

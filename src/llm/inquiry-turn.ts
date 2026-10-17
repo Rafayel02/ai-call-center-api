@@ -16,12 +16,11 @@ export interface ConversationMessage {
   interrupted?: boolean;
 }
 
-export function inquirySystemPrompt(instructions: string, note?: string): string {
+export function inquirySystemPrompt(note?: string): string {
   const lines = [
-    'You are on a live phone call. Your only job is to understand what the caller wants.',
+    'You are on a live phone call. Agree with the caller on a shared understanding of their inquiry. Do not decide in advance what that inquiry should be about.',
     '',
-    'Instructions:',
-    instructions.trim() || 'Learn what the caller wants.',
+    'The messages may already include lines spoken in earlier steps. Do not greet again if a greeting was already spoken, and do not greet if the caller does not greet. Do not repeat lines that were already said. Continue from the latest turn.',
     '',
     'Return JSON with reply, inquiry, and phase.',
     '',
