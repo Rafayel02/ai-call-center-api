@@ -17,6 +17,7 @@ export interface LlmCompletionRequest {
   note?: string;
   topics?: RouteTopic[];
   defaultTopicId?: string;
+  verify?: boolean;
 }
 
 export interface LlmRouteRequest {

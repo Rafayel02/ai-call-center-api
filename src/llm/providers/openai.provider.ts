@@ -9,7 +9,7 @@ import {
   EncryptedSecret,
   secretHint,
 } from '../../common/crypto/credential-cipher';
-import { inquirySystemPrompt, readInquiryTurn } from '../inquiry-turn';
+import { inquirySystemPrompt, readInquiryTurn, withoutVerification } from '../inquiry-turn';
 import { readTopicChoice, topicRoutePrompt } from '../topic-route';
 import { ConnectionTestResult, LlmCompletionRequest, LlmProviderClient, LlmRouteRequest } from './llm-provider';
 
@@ -115,7 +115,7 @@ export class OpenAiProvider implements LlmProviderClient {
           temperature: 0.3,
           max_completion_tokens: 400,
           messages: [
-            { role: 'system', content: inquirySystemPrompt(request.note, request.topics, request.defaultTopicId) },
+            { role: 'system', content: inquirySystemPrompt(request.note, request.topics, request.defaultTopicId, request.verify !== false) },
             ...request.messages.map((message) => ({
               role: message.role,
               content: message.interrupted
@@ -158,7 +158,8 @@ export class OpenAiProvider implements LlmProviderClient {
       throw new BadRequestException('OpenAI returned an unreadable reply.');
     }
     const allowed = request.defaultTopicId ? [...(request.topics ?? []).map((topic) => topic.id), request.defaultTopicId] : undefined;
-    return readInquiryTurn(parsed, allowed, request.defaultTopicId);
+    const turn = readInquiryTurn(parsed, allowed, request.defaultTopicId);
+    return request.verify === false ? withoutVerification(turn) : turn;
   }
 
   async route(config: Record<string, unknown>, request: LlmRouteRequest) {
