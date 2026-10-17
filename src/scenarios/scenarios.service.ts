@@ -10,6 +10,7 @@ const scenarioSummary = {
   name: true,
   description: true,
   icon: true,
+  active: true,
   createdAt: true,
   updatedAt: true,
   organization: { select: { id: true, name: true } },
@@ -62,6 +63,21 @@ export class ScenariosService {
     if (ids.length === 0) return;
     const found = await model.findMany({ where: { id: { in: ids } }, select: { id: true } });
     if (found.length !== ids.length) throw new BadRequestException(message);
+  }
+
+  async setActive(id: string, active: boolean) {
+    try {
+      return await this.prisma.scenario.update({
+        where: { id },
+        data: { active },
+        select: scenarioSummary,
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+        throw new NotFoundException('Scenario not found.');
+      }
+      throw error;
+    }
   }
 
   async saveGraph(id: string, dto: SaveScenarioGraphDto) {
