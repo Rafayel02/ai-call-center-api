@@ -54,24 +54,32 @@ export class ScenariosService {
     });
   }
 
+  private async assertModels(
+    model: { findMany(args: { where: { id: { in: string[] } }; select: { id: true } }): Promise<Array<{ id: string }>> },
+    ids: string[],
+    message: string,
+  ) {
+    if (ids.length === 0) return;
+    const found = await model.findMany({ where: { id: { in: ids } }, select: { id: true } });
+    if (found.length !== ids.length) throw new BadRequestException(message);
+  }
+
   async saveGraph(id: string, dto: SaveScenarioGraphDto) {
     const graph = parseScenarioGraph(dto);
-    const modelIds = [
-      ...new Set(
-        graph.nodes.flatMap((node) =>
-          node.type === 'tts' && 'modelId' in node.data && node.data.modelId ? [node.data.modelId] : [],
-        ),
-      ),
-    ];
-    if (modelIds.length > 0) {
-      const found = await this.prisma.textToSpeechModel.findMany({
-        where: { id: { in: modelIds } },
-        select: { id: true },
-      });
-      if (found.length !== modelIds.length) {
-        throw new BadRequestException('Choose a text-to-speech model that exists.');
+    const ttsModelIds = new Set<string>();
+    const sttModelIds = new Set<string>();
+    const llmModelIds = new Set<string>();
+    for (const node of graph.nodes) {
+      if (node.type === 'tts' && node.data.modelId) ttsModelIds.add(node.data.modelId);
+      if (node.type === 'loop') {
+        if (node.data.ttsModelId) ttsModelIds.add(node.data.ttsModelId);
+        if (node.data.sttModelId) sttModelIds.add(node.data.sttModelId);
+        if (node.data.llmModelId) llmModelIds.add(node.data.llmModelId);
       }
     }
+    await this.assertModels(this.prisma.textToSpeechModel, [...ttsModelIds], 'Choose a text-to-speech model that exists.');
+    await this.assertModels(this.prisma.speechToTextModel, [...sttModelIds], 'Choose a speech-to-text model that exists.');
+    await this.assertModels(this.prisma.llmModel, [...llmModelIds], 'Choose an LLM that exists.');
     try {
       const scenario = await this.prisma.scenario.update({
         where: { id },
