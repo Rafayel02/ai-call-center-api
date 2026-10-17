@@ -1,5 +1,6 @@
 import { LlmProvider } from '@prisma/client';
 import { ConversationMessage, InquiryTurn } from '../inquiry-turn';
+import { RouteTopic } from '../topic-route';
 
 export interface PublicLlmConfig {
   modelId: string;
@@ -16,6 +17,13 @@ export interface LlmCompletionRequest {
   note?: string;
 }
 
+export interface LlmRouteRequest {
+  inquiry?: string;
+  messages: ConversationMessage[];
+  topics: RouteTopic[];
+  defaultTopicId: string;
+}
+
 export interface LlmProviderClient {
   readonly id: LlmProvider;
   readonly supportsConnectionTest: boolean;
@@ -24,4 +32,5 @@ export interface LlmProviderClient {
   toPublic(config: Record<string, unknown>): PublicLlmConfig;
   test?(config: Record<string, unknown>): Promise<ConnectionTestResult>;
   complete(config: Record<string, unknown>, request: LlmCompletionRequest): Promise<InquiryTurn>;
+  route(config: Record<string, unknown>, request: LlmRouteRequest): Promise<{ topicId: string }>;
 }

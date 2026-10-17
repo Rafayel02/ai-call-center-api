@@ -111,3 +111,55 @@ test('keeps a saved text-to-speech model id', () => {
   const data = graph.nodes[0]?.data;
   assert.equal(data && 'modelId' in data ? data.modelId : null, modelId);
 });
+
+test('accepts a topic switch whose topics both reach end', () => {
+  const graph = parseScenarioGraph({
+    nodes: [
+      start,
+      end,
+      {
+        id: 'switch-1',
+        type: 'switch',
+        position: { x: 20, y: 20 },
+        data: {
+          topics: [
+            { id: 'hours', description: 'User asks for working hours', isDefault: false },
+            { id: 'default', description: 'ignored', isDefault: true },
+          ],
+        },
+      },
+      speech,
+    ],
+    edges: [
+      { id: 'e-2', source: 'switch-1', sourceHandle: 'default', target: 'end' },
+      { id: 'e-3', source: 'switch-1', sourceHandle: 'hours', target: 'tts-1' },
+      { id: 'e-4', source: 'tts-1', target: 'end' },
+    ],
+  });
+  const routed = graph.nodes.find((node) => node.id === 'switch-1');
+  assert.equal(routed?.type, 'switch');
+  if (routed?.type !== 'switch') return;
+  assert.equal(routed.data.topics[0]?.id, 'default');
+  assert.equal(routed.data.topics[0]?.description, '');
+  assert.equal(routed.data.topics[1]?.description, 'User asks for working hours');
+  assert.equal(graph.edges.find((edge) => edge.id === 'e-3')?.sourceHandle, 'hours');
+});
+
+test('rejects a topic that does not lead to end', () => {
+  assert.throws(
+    () =>
+      parseScenarioGraph({
+        nodes: [
+          end,
+          {
+            id: 'switch-1',
+            type: 'switch',
+            position: { x: 0, y: 0 },
+            data: { topics: [{ id: 'default', description: '', isDefault: true }] },
+          },
+        ],
+        edges: [],
+      }),
+    /Connect Default through to End/,
+  );
+});

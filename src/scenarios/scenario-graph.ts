@@ -1,6 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 
-export const SCENARIO_NODE_TYPES = ['start', 'end', 'tts', 'loop'] as const;
+export const SCENARIO_NODE_TYPES = ['start', 'end', 'tts', 'loop', 'switch'] as const;
 
 export type ScenarioNodeType = (typeof SCENARIO_NODE_TYPES)[number];
 
@@ -18,15 +18,27 @@ export interface LoopNodeData {
   maxTurns: number;
 }
 
+export interface SwitchTopic {
+  id: string;
+  description: string;
+  isDefault: boolean;
+}
+
+export interface SwitchNodeData {
+  topics: SwitchTopic[];
+}
+
 export type ScenarioGraphNode =
   | { id: string; type: 'start' | 'end'; position: { x: number; y: number }; data: Record<string, never> }
   | { id: string; type: 'tts'; position: { x: number; y: number }; data: TtsNodeData }
-  | { id: string; type: 'loop'; position: { x: number; y: number }; data: LoopNodeData };
+  | { id: string; type: 'loop'; position: { x: number; y: number }; data: LoopNodeData }
+  | { id: string; type: 'switch'; position: { x: number; y: number }; data: SwitchNodeData };
 
 export interface ScenarioGraphEdge {
   id: string;
   source: string;
   target: string;
+  sourceHandle?: string;
 }
 
 export interface ScenarioGraph {
@@ -37,8 +49,9 @@ export interface ScenarioGraph {
 const CONNECTIONS: Record<ScenarioNodeType, readonly ScenarioNodeType[]> = {
   start: ['tts', 'loop'],
   end: [],
-  tts: ['tts', 'loop', 'end'],
-  loop: ['tts', 'loop', 'end'],
+  tts: ['tts', 'loop', 'switch', 'end'],
+  loop: ['tts', 'loop', 'switch', 'end'],
+  switch: ['tts', 'loop', 'switch', 'end'],
 };
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
@@ -75,13 +88,20 @@ export function parseScenarioGraph(input: unknown): ScenarioGraph {
   const edges = record.edges.map((edge) => parseEdge(edge, nodes));
   const edgeIds = new Set<string>();
   const pairs = new Set<string>();
+  const topicLanes = new Set<string>();
   for (const edge of edges) {
     if (edgeIds.has(edge.id)) throw new BadRequestException('Each connection needs its own id.');
     edgeIds.add(edge.id);
-    const pair = `${edge.source}>${edge.target}`;
+    const pair = `${edge.source}:${edge.sourceHandle ?? ''}>${edge.target}`;
     if (pairs.has(pair)) throw new BadRequestException('Those steps are already connected.');
     pairs.add(pair);
+    if (edge.sourceHandle) {
+      const lane = `${edge.source}:${edge.sourceHandle}`;
+      if (topicLanes.has(lane)) throw new BadRequestException('A topic can lead to only one next step.');
+      topicLanes.add(lane);
+    }
   }
+  assertTopicsReachEnd(nodes, edges);
 
   nodes.sort((left, right) => left.id.localeCompare(right.id));
   edges.sort((left, right) => left.id.localeCompare(right.id));
@@ -104,7 +124,7 @@ function parseNode(value: unknown): ScenarioGraphNode {
   if (typeof node.id !== 'string' || !ID_PATTERN.test(node.id)) {
     throw new BadRequestException('A scenario step has an invalid id.');
   }
-  if (node.type !== 'start' && node.type !== 'end' && node.type !== 'tts' && node.type !== 'loop') {
+  if (node.type !== 'start' && node.type !== 'end' && node.type !== 'tts' && node.type !== 'loop' && node.type !== 'switch') {
     throw new BadRequestException('A scenario step has an unknown type.');
   }
   const position = parsePosition(node.position);
@@ -113,6 +133,9 @@ function parseNode(value: unknown): ScenarioGraphNode {
   }
   if (node.type === 'loop') {
     return { id: node.id, type: node.type, position, data: parseLoopData(node.data) };
+  }
+  if (node.type === 'switch') {
+    return { id: node.id, type: node.type, position, data: parseSwitchData(node.data) };
   }
   return { id: node.id, type: node.type, position, data: {} };
 }
@@ -200,11 +223,84 @@ function parseTtsData(value: unknown): { modelId: string | null; text: string } 
   return { modelId, text };
 }
 
+function parseSwitchData(value: unknown): SwitchNodeData {
+  const data = value && typeof value === 'object' && !Array.isArray(value) ? (value as { topics?: unknown }) : {};
+  if (!Array.isArray(data.topics) || data.topics.length < 1 || data.topics.length > 9) {
+    throw new BadRequestException('A topic switch can have Default and at most 8 topics.');
+  }
+  const topics = data.topics.map(parseTopic);
+  if (topics.filter((topic) => topic.isDefault).length !== 1) {
+    throw new BadRequestException('A topic switch needs one Default.');
+  }
+  const ids = new Set<string>();
+  for (const topic of topics) {
+    if (ids.has(topic.id)) throw new BadRequestException('Each topic needs its own id.');
+    ids.add(topic.id);
+    if (!topic.isDefault && !topic.description) throw new BadRequestException('Describe each topic.');
+  }
+  const fallback = topics.find((topic) => topic.isDefault);
+  const rest = topics.filter((topic) => !topic.isDefault);
+  return { topics: fallback ? [fallback, ...rest] : topics };
+}
+
+function parseTopic(value: unknown): SwitchTopic {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new BadRequestException('A topic is invalid.');
+  }
+  const topic = value as { id?: unknown; description?: unknown; isDefault?: unknown };
+  if (typeof topic.id !== 'string' || !ID_PATTERN.test(topic.id)) {
+    throw new BadRequestException('A topic has an invalid id.');
+  }
+  const isDefault = topic.isDefault === true;
+  if (topic.description !== undefined && typeof topic.description !== 'string') {
+    throw new BadRequestException('Describe each topic.');
+  }
+  const description = isDefault || typeof topic.description !== 'string' ? '' : topic.description.trim();
+  if (!isDefault && (description.length === 0 || description.length > 240)) {
+    throw new BadRequestException('Describe each topic in 240 characters or less.');
+  }
+  return { id: topic.id, description, isDefault };
+}
+
+function assertTopicsReachEnd(nodes: ScenarioGraphNode[], edges: ScenarioGraphEdge[]) {
+  for (const node of nodes) {
+    if (node.type !== 'switch') continue;
+    for (const topic of node.data.topics) {
+      const edge = edges.find((item) => item.source === node.id && item.sourceHandle === topic.id);
+      if (!edge) {
+        const label = topic.isDefault ? 'Default' : `"${topic.description.slice(0, 80)}"`;
+        throw new BadRequestException(`Connect ${label} through to End.`);
+      }
+      if (!leadsToEnd(edge.target, nodes, edges, new Set([node.id]))) {
+        throw new BadRequestException('Every topic must lead to End.');
+      }
+    }
+  }
+}
+
+function leadsToEnd(nodeId: string, nodes: ScenarioGraphNode[], edges: ScenarioGraphEdge[], seen: Set<string>): boolean {
+  if (seen.has(nodeId)) return false;
+  const node = nodes.find((item) => item.id === nodeId);
+  if (!node) return false;
+  if (node.type === 'end') return true;
+  const nextSeen = new Set(seen);
+  nextSeen.add(nodeId);
+  if (node.type === 'switch') {
+    return node.data.topics.every((topic) => {
+      const edge = edges.find((item) => item.source === node.id && item.sourceHandle === topic.id);
+      return edge ? leadsToEnd(edge.target, nodes, edges, nextSeen) : false;
+    });
+  }
+  const outgoing = edges.filter((item) => item.source === nodeId);
+  if (outgoing.length !== 1) return false;
+  return leadsToEnd(outgoing[0].target, nodes, edges, nextSeen);
+}
+
 function parseEdge(value: unknown, nodes: ScenarioGraphNode[]): ScenarioGraphEdge {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new BadRequestException('A scenario connection is invalid.');
   }
-  const edge = value as { id?: unknown; source?: unknown; target?: unknown };
+  const edge = value as { id?: unknown; source?: unknown; target?: unknown; sourceHandle?: unknown };
   if (typeof edge.id !== 'string' || !ID_PATTERN.test(edge.id)) {
     throw new BadRequestException('A scenario connection has an invalid id.');
   }
@@ -219,5 +315,21 @@ function parseEdge(value: unknown, nodes: ScenarioGraphNode[]): ScenarioGraphEdg
   if (!CONNECTIONS[source.type].includes(target.type)) {
     throw new BadRequestException('Connect Start to Text to speech or Conversational Loop, then continue through to End.');
   }
-  return { id: edge.id, source: edge.source, target: edge.target };
+  let sourceHandle: string | undefined;
+  if (edge.sourceHandle !== undefined && edge.sourceHandle !== null) {
+    if (typeof edge.sourceHandle !== 'string' || !ID_PATTERN.test(edge.sourceHandle)) {
+      throw new BadRequestException('A topic connection is invalid.');
+    }
+    sourceHandle = edge.sourceHandle;
+  }
+  if (source.type === 'switch') {
+    if (!sourceHandle || !source.data.topics.some((topic) => topic.id === sourceHandle)) {
+      throw new BadRequestException('Connect each topic to its next step.');
+    }
+  } else if (sourceHandle) {
+    throw new BadRequestException('Only a topic switch chooses a direction.');
+  }
+  return sourceHandle
+    ? { id: edge.id, source: edge.source, target: edge.target, sourceHandle }
+    : { id: edge.id, source: edge.source, target: edge.target };
 }

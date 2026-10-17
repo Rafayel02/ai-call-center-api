@@ -42,6 +42,25 @@ export class TestLlmDraftDto {
   config!: Record<string, unknown>;
 }
 
+export class RouteCallDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  inquiry?: string;
+
+  @IsArray()
+  @ArrayMaxSize(40)
+  messages!: unknown[];
+
+  @IsArray()
+  @ArrayMaxSize(8)
+  topics!: unknown[];
+
+  @IsString()
+  @MaxLength(80)
+  defaultTopicId!: string;
+}
+
 export class CompleteTurnDto {
   @IsOptional()
   @IsString()

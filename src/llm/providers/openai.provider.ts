@@ -10,7 +10,8 @@ import {
   secretHint,
 } from '../../common/crypto/credential-cipher';
 import { inquirySystemPrompt, readInquiryTurn } from '../inquiry-turn';
-import { ConnectionTestResult, LlmCompletionRequest, LlmProviderClient } from './llm-provider';
+import { readTopicChoice, topicRoutePrompt } from '../topic-route';
+import { ConnectionTestResult, LlmCompletionRequest, LlmProviderClient, LlmRouteRequest } from './llm-provider';
 
 export const OPENAI_MODEL_IDS = ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1'] as const;
 
@@ -152,6 +153,74 @@ export class OpenAiProvider implements LlmProviderClient {
       throw new BadRequestException('OpenAI returned an unreadable reply.');
     }
     return readInquiryTurn(parsed);
+  }
+
+  async route(config: Record<string, unknown>, request: LlmRouteRequest) {
+    const stored = this.readStored(config);
+    const apiKey = decryptSecret(stored.apiKey, this.key());
+    const allowed = [...request.topics.map((topic) => topic.id), request.defaultTopicId];
+    const history = request.messages.map((message) => ({
+      role: message.role,
+      content: message.interrupted
+        ? `${message.content}\n[interrupted: the caller spoke over this and may not have heard it fully]`
+        : message.content,
+    }));
+    let response: Response;
+    try {
+      response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: stored.modelId,
+          temperature: 0,
+          max_completion_tokens: 80,
+          messages: [
+            { role: 'system', content: topicRoutePrompt(request.inquiry, request.topics, request.defaultTopicId) },
+            ...(history.length > 0 ? history : [{ role: 'user' as const, content: 'Choose a topic for this call.' }]),
+          ],
+          response_format: {
+            type: 'json_schema',
+            json_schema: {
+              name: 'topic_choice',
+              strict: true,
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  topicId: { type: 'string', enum: allowed },
+                },
+                required: ['topicId'],
+              },
+            },
+          },
+        }),
+      });
+    } catch {
+      throw new BadRequestException('Could not reach OpenAI.');
+    }
+
+    if (!response.ok) {
+      throw new BadRequestException(await this.openAiMessage(response));
+    }
+
+    const payload = (await response.json()) as {
+      choices?: Array<{ message?: { content?: unknown; refusal?: unknown } }>;
+    };
+    const message = payload.choices?.[0]?.message;
+    if (message && typeof message.refusal === 'string' && message.refusal.trim()) {
+      throw new BadRequestException('OpenAI refused this turn.');
+    }
+    if (!message || typeof message.content !== 'string' || !message.content.trim()) {
+      return { topicId: request.defaultTopicId };
+    }
+    try {
+      return { topicId: readTopicChoice(JSON.parse(message.content), allowed, request.defaultTopicId) };
+    } catch {
+      return { topicId: request.defaultTopicId };
+    }
   }
 
   private store(apiKey: string, modelId: StoredOpenAiConfig['modelId']): StoredOpenAiConfig {
