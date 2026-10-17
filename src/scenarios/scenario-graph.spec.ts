@@ -65,6 +65,7 @@ test('accepts a conversational loop and keeps its inquiry settings', () => {
           silenceSeconds: 4.2,
           fillers: [' Just a moment. ', ''],
           instructions: 'Find the booking.',
+          verify: true,
           maxTurns: 8,
         },
       },
@@ -81,8 +82,8 @@ test('accepts a conversational loop and keeps its inquiry settings', () => {
   assert.equal(loop.data.silenceSeconds, 4);
   assert.deepEqual(loop.data.fillers, ['Just a moment.']);
   assert.equal('instructions' in loop.data, false);
+  assert.equal('verify' in loop.data, false);
   assert.equal(loop.data.sttModelId, modelId);
-  assert.equal(loop.data.verify, true);
 });
 
 test('rejects a conversational loop with too many delay lines', () => {

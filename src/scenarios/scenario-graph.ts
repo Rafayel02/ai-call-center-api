@@ -16,7 +16,6 @@ export interface LoopNodeData {
   silenceSeconds: number;
   fillers: string[];
   maxTurns: number;
-  verify: boolean;
 }
 
 export interface SwitchTopic {
@@ -167,7 +166,6 @@ function parseLoopData(value: unknown): LoopNodeData {
     silenceSeconds: parseBoundedInt(data.silenceSeconds, 4, 1, 30, 'Silence must be between 1 and 30 seconds.'),
     fillers: parseFillers(data.fillers),
     maxTurns: parseBoundedInt(data.maxTurns, 8, 1, 20, 'Max turns must be between 1 and 20.'),
-    verify: data.verify !== false,
   };
 }
 

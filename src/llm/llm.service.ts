@@ -30,7 +30,6 @@ const completeSchema = z
       .max(8)
       .optional(),
     defaultTopicId: topicIdSchema.optional(),
-    verify: z.boolean().optional(),
   })
   .superRefine((value, context) => {
     const topics = value.topics ?? [];
@@ -144,7 +143,6 @@ export class LlmService {
       note: parsed.data.note,
       topics: parsed.data.topics,
       defaultTopicId: parsed.data.defaultTopicId,
-      verify: parsed.data.verify,
     });
   }
 

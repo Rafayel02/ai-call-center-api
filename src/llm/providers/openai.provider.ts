@@ -9,7 +9,7 @@ import {
   EncryptedSecret,
   secretHint,
 } from '../../common/crypto/credential-cipher';
-import { inquirySystemPrompt, readInquiryTurn, withoutVerification } from '../inquiry-turn';
+import { inquirySystemPrompt, readInquiryTurn } from '../inquiry-turn';
 import { readTopicChoice, topicRoutePrompt } from '../topic-route';
 import { ConnectionTestResult, LlmCompletionRequest, LlmProviderClient, LlmRouteRequest } from './llm-provider';
 
@@ -31,7 +31,7 @@ function inquiryResponseSchema(topics: Array<{ id: string }> | undefined, defaul
   const properties: Record<string, unknown> = {
     reply: { type: 'string' },
     inquiry: { type: ['string', 'null'] },
-    phase: { type: 'string', enum: ['clarify', 'confirm', 'accepted'] },
+    phase: { type: 'string', enum: ['clarify', 'accepted'] },
   };
   const required = ['reply', 'inquiry', 'phase'];
   if (topics && topics.length > 0 && defaultTopicId) {
@@ -115,7 +115,7 @@ export class OpenAiProvider implements LlmProviderClient {
           temperature: 0.3,
           max_completion_tokens: 400,
           messages: [
-            { role: 'system', content: inquirySystemPrompt(request.note, request.topics, request.defaultTopicId, request.verify !== false) },
+            { role: 'system', content: inquirySystemPrompt(request.note, request.topics, request.defaultTopicId) },
             ...request.messages.map((message) => ({
               role: message.role,
               content: message.interrupted
@@ -158,8 +158,7 @@ export class OpenAiProvider implements LlmProviderClient {
       throw new BadRequestException('OpenAI returned an unreadable reply.');
     }
     const allowed = request.defaultTopicId ? [...(request.topics ?? []).map((topic) => topic.id), request.defaultTopicId] : undefined;
-    const turn = readInquiryTurn(parsed, allowed, request.defaultTopicId);
-    return request.verify === false ? withoutVerification(turn) : turn;
+    return readInquiryTurn(parsed, allowed, request.defaultTopicId);
   }
 
   async route(config: Record<string, unknown>, request: LlmRouteRequest) {

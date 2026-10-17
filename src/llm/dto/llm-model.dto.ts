@@ -85,8 +85,4 @@ export class CompleteTurnDto {
   @IsString()
   @MaxLength(80)
   defaultTopicId?: string;
-
-  @IsOptional()
-  @IsBoolean()
-  verify?: boolean;
 }
