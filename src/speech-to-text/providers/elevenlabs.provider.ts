@@ -98,6 +98,11 @@ export class ElevenLabsProvider implements SpeechToTextProvider {
     };
   }
 
+  engineKey(config: Record<string, unknown>) {
+    const stored = this.readStored(config);
+    return [this.id, stored.modelId, stored.languageCode ?? 'auto'].join('|');
+  }
+
   async test(config: Record<string, unknown>): Promise<ConnectionTestResult> {
     const stored = this.readStored(config);
     const apiKey = decryptSecret(stored.apiKey, this.key());

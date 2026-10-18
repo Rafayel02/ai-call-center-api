@@ -85,6 +85,11 @@ export class HiSpeechProvider implements SpeechToTextProvider {
     };
   }
 
+  engineKey(config: Record<string, unknown>) {
+    const stored = this.readStored(config);
+    return [this.id, stored.modelId, stored.secureMode ? 'secure' : 'standard'].join('|');
+  }
+
   async transcribe(config: Record<string, unknown>, audio: AudioInput): Promise<TranscriptionResult> {
     if (audio.buffer.length < 1000) {
       throw new BadRequestException('That recording is too short.');

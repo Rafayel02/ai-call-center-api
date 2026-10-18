@@ -10,6 +10,7 @@ import { OrganizationsModule } from './organizations/organizations.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ScenariosModule } from './scenarios/scenarios.module';
 import { SpeechToTextModule } from './speech-to-text/speech-to-text.module';
+import { SpeechToTextComparisonModule } from './speech-to-text-comparison/speech-to-text-comparison.module';
 import { TextToSpeechModule } from './text-to-speech/text-to-speech.module';
 import { UsersModule } from './users/users.module';
 
@@ -21,6 +22,7 @@ import { UsersModule } from './users/users.module';
     AuthModule,
     UsersModule,
     SpeechToTextModule,
+    SpeechToTextComparisonModule,
     TextToSpeechModule,
     LlmModule,
     DatasetModule,

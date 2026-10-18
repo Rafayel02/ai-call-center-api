@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -67,6 +68,10 @@ export class DatasetService {
       throw new BadRequestException('Upload an audio file.');
     }
     const filename = (file.originalname || 'audio').replace(/[^\w.\-]+/g, '_').slice(0, 120);
+    // Checks are stored per sample, so a second copy of a recording would be paid for again.
+    const audioSha256 = createHash('sha256').update(file.buffer).digest('hex');
+    const copy = await this.prisma.datasetSample.findFirst({ where: { audioSha256 }, select: { id: true } });
+    if (copy) throw new ConflictException('This recording is already in the dataset.');
     let sample;
     try {
       sample = await this.prisma.datasetSample.create({
@@ -78,6 +83,7 @@ export class DatasetService {
         source,
         externalId,
         audio: Uint8Array.from(file.buffer),
+        audioSha256,
         mimeType,
         filename,
         byteSize: file.buffer.length,
