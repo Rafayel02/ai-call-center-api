@@ -8,6 +8,12 @@ export interface InquiryTurn {
   reply: string;
   inquiry: string | null;
   phase: InquiryPhase;
+  topicId: string | null;
+}
+
+export interface PromptTopic {
+  id: string;
+  description: string;
 }
 
 export interface ConversationMessage {
@@ -16,32 +22,45 @@ export interface ConversationMessage {
   interrupted?: boolean;
 }
 
-export function inquirySystemPrompt(note?: string): string {
+export function inquirySystemPrompt(note?: string, topics?: PromptTopic[], defaultTopicId?: string): string {
   const lines = [
-    'You are on a live phone call. Agree with the caller on a shared understanding of their inquiry. Do not decide in advance what that inquiry should be about.',
+    'You are on a live phone call. Your only job is to agree with the caller on what their inquiry is. You do not answer the inquiry.',
+    '',
+    'Do not answer their question. Do not search, look up, or supply facts such as an address, location, hours, price, policy, or status. The inquiry is what they want, not the answer to it.',
+    'Example: if the caller asks where the office is, the inquiry is "the office location". Accept it on this turn. Do not give the address and do not ask them to confirm.',
     '',
     'The messages may already include lines spoken in earlier steps. Do not greet again if a greeting was already spoken, and do not greet if the caller does not greet. Do not repeat lines that were already said. Continue from the latest turn.',
     '',
-    'Return JSON with reply, inquiry, and phase.',
+    'phase "clarify": you still need information. reply is one short follow-up question about what they want, not the answer. inquiry is your best partial statement, or null.',
+    'Do not use phase "confirm". Do not ask the caller to confirm, and do not repeat their inquiry back to them.',
+    'phase "accepted": use this as soon as the conversation makes the inquiry clear. inquiry is that statement. reply must be an empty string, because the call continues to the next step without another spoken line.',
     '',
-    'phase "clarify": you still need information. reply is one short follow-up question. inquiry is your best partial statement, or null.',
-    'phase "confirm": you can state the inquiry. inquiry is that statement. reply must ask the caller to confirm it, in the form "So you want {inquiry}?" This is not the end of the call.',
-    'phase "accepted": use this only after the caller clearly agrees with the confirmation question you just asked. reply is a short acknowledgement such as "Okay." inquiry is the confirmed statement.',
-    '',
-    'If the caller refuses or corrects you, do not use accepted. Use clarify, or confirm again with the corrected inquiry.',
-    'Speak only through reply. Keep reply short enough to say aloud.',
+    'If you still cannot tell what they want, use clarify. Once it is clear, accept on this turn.',
   ];
+  if (topics && topics.length > 0 && defaultTopicId) {
+    lines.push(
+      '',
+      'These are the topics a later step can route to. Use the conversation and these topics to recognize the direction. If the caller clearly matches one, accept now and set topicId to it. If the inquiry is clear but nothing matches, accept with the default id. Still do not answer the inquiry.',
+      '',
+      'Topics:',
+      ...topics.map((topic) => `- ${topic.id}: ${topic.description}`),
+      `- ${defaultTopicId}: anything that does not match a topic above`,
+      '',
+      'Return topicId set to exactly one of those ids on every phase. Use the default id when none match.',
+    );
+  }
+  lines.push('', topics && topics.length > 0 && defaultTopicId ? 'Return JSON with reply, inquiry, phase, and topicId.' : 'Return JSON with reply, inquiry, and phase.');
   if (note?.trim()) {
     lines.push('', `Note: ${note.trim()}`);
   }
   return lines.join('\n');
 }
 
-export function readInquiryTurn(value: unknown): InquiryTurn {
+export function readInquiryTurn(value: unknown, allowedTopicIds?: string[], fallbackTopicId?: string): InquiryTurn {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new BadRequestException('OpenAI returned an unreadable reply.');
   }
-  const record = value as { reply?: unknown; inquiry?: unknown; phase?: unknown };
+  const record = value as { reply?: unknown; inquiry?: unknown; phase?: unknown; topicId?: unknown };
   if (typeof record.phase !== 'string' || !INQUIRY_PHASES.includes(record.phase as InquiryPhase)) {
     throw new BadRequestException('OpenAI returned an unknown phase.');
   }
@@ -57,13 +76,14 @@ export function readInquiryTurn(value: unknown): InquiryTurn {
   if (phase === 'clarify' && !reply) {
     throw new BadRequestException('OpenAI did not return a reply.');
   }
-  if (phase === 'confirm' && inquiry && !reply) {
-    reply = `So you want ${inquiry}?`;
+  if (phase === 'confirm' || phase === 'accepted') {
+    reply = '';
   }
-  if (phase === 'accepted' && !reply) {
-    reply = 'Okay.';
+  let topicId: string | null = null;
+  if (allowedTopicIds && allowedTopicIds.length > 0 && fallbackTopicId) {
+    topicId = typeof record.topicId === 'string' && allowedTopicIds.includes(record.topicId) ? record.topicId : fallbackTopicId;
   }
-  return { reply, inquiry, phase };
+  return { reply, inquiry, phase: phase === 'confirm' ? 'accepted' : phase, topicId };
 }
 
 function readInquiry(value: unknown): string | null {

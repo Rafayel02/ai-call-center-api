@@ -2,8 +2,9 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { LlmProvider, Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { PrismaService } from '../prisma/prisma.service';
-import { CompleteTurnDto, CreateLlmModelDto, TestLlmDraftDto, UpdateLlmModelDto } from './dto/llm-model.dto';
+import { CompleteTurnDto, CreateLlmModelDto, RouteCallDto, TestLlmDraftDto, UpdateLlmModelDto } from './dto/llm-model.dto';
 import { ConversationMessage } from './inquiry-turn';
+import { RouteTopic } from './topic-route';
 import { ProviderRegistry } from './providers/provider.registry';
 import { LlmProviderClient } from './providers/llm-provider';
 
@@ -13,9 +14,44 @@ const messageSchema = z.object({
   interrupted: z.boolean().optional(),
 });
 
-const completeSchema = z.object({
-  messages: z.array(messageSchema).min(1).max(40),
-  note: z.string().trim().max(1000).optional(),
+const topicIdSchema = z.string().trim().regex(/^[A-Za-z0-9_-]{1,80}$/);
+
+const completeSchema = z
+  .object({
+    messages: z.array(messageSchema).min(1).max(40),
+    note: z.string().trim().max(1000).optional(),
+    topics: z
+      .array(
+        z.object({
+          id: topicIdSchema,
+          description: z.string().trim().min(1).max(240),
+        }),
+      )
+      .max(8)
+      .optional(),
+    defaultTopicId: topicIdSchema.optional(),
+  })
+  .superRefine((value, context) => {
+    const topics = value.topics ?? [];
+    if (topics.length === 0) return;
+    const ids = new Set(topics.map((topic) => topic.id));
+    if (!value.defaultTopicId || ids.size !== topics.length || ids.has(value.defaultTopicId)) {
+      context.addIssue({ code: 'custom', message: 'Each topic needs its own id.', path: ['topics'] });
+    }
+  });
+
+const routeSchema = z.object({
+  inquiry: z.string().trim().max(500).optional(),
+  messages: z.array(messageSchema).max(40),
+  topics: z
+    .array(
+      z.object({
+        id: topicIdSchema,
+        description: z.string().trim().min(1).max(240),
+      }),
+    )
+    .max(8),
+  defaultTopicId: topicIdSchema,
 });
 
 @Injectable()
@@ -92,7 +128,8 @@ export class LlmService {
   async complete(id: string, dto: CompleteTurnDto) {
     const parsed = completeSchema.safeParse(dto);
     if (!parsed.success) {
-      throw new BadRequestException('Include the conversation.');
+      const topicIssue = parsed.error.issues.some((issue) => issue.path[0] === 'topics' || issue.path[0] === 'defaultTopicId');
+      throw new BadRequestException(topicIssue ? 'Describe each topic before choosing a direction.' : 'Include the conversation.');
     }
     const model = await this.findOrThrow(id);
     if (!model.enabled) throw new BadRequestException('This model is disabled.');
@@ -104,7 +141,34 @@ export class LlmService {
     return this.providers.get(model.provider).complete(model.config as Record<string, unknown>, {
       messages,
       note: parsed.data.note,
+      topics: parsed.data.topics,
+      defaultTopicId: parsed.data.defaultTopicId,
     });
+  }
+
+  async route(id: string, dto: RouteCallDto) {
+    const parsed = routeSchema.safeParse(dto);
+    if (!parsed.success) throw new BadRequestException('Describe each topic before choosing a direction.');
+    const topics: RouteTopic[] = parsed.data.topics;
+    const ids = new Set(topics.map((topic) => topic.id));
+    if (ids.size !== topics.length || ids.has(parsed.data.defaultTopicId)) {
+      throw new BadRequestException('Each topic needs its own id.');
+    }
+    const model = await this.findOrThrow(id);
+    if (!model.enabled) throw new BadRequestException('This model is disabled.');
+    const messages: ConversationMessage[] = parsed.data.messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+      interrupted: message.interrupted,
+    }));
+    const choice = await this.providers.get(model.provider).route(model.config as Record<string, unknown>, {
+      inquiry: parsed.data.inquiry,
+      messages,
+      topics,
+      defaultTopicId: parsed.data.defaultTopicId,
+    });
+    const allowed = new Set([...ids, parsed.data.defaultTopicId]);
+    return { topicId: allowed.has(choice.topicId) ? choice.topicId : parsed.data.defaultTopicId };
   }
 
   private runTest(provider: LlmProviderClient, config: Record<string, unknown>) {
