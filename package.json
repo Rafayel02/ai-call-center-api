@@ -9,7 +9,8 @@
     "start:prod": "prisma migrate deploy && node dist/main.js",
     "lint": "tsc --noEmit --pretty false",
     "typecheck": "tsc --noEmit --pretty false",
-    "test": "tsx --test src/common/crypto/credential-cipher.spec.ts src/llm/inquiry-turn.spec.ts src/scenarios/scenario-graph.spec.ts src/text-to-speech/speech-clip.spec.ts src/speech-to-text-comparison/transcript-score.spec.ts src/speech-to-text-comparison/sample-selection.spec.ts"
+    "test:db": "tsx scripts/test-db.ts",
+    "test": "tsx --test src/common/crypto/credential-cipher.spec.ts src/llm/inquiry-turn.spec.ts src/scenarios/scenario-graph.spec.ts src/text-to-speech/speech-clip.spec.ts src/speech-to-text-comparison/transcript-score.spec.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.6",

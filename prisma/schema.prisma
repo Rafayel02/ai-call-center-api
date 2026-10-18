@@ -24,6 +24,11 @@ enum LlmProvider {
   OPENAI
 }
 
+enum SttCheckStatus {
+  SUCCEEDED
+  FAILED
+}
+
 model User {
   id           String   @id @default(uuid()) @db.Uuid
   email        String   @unique
@@ -84,6 +89,7 @@ model SpeechToTextModel {
   updatedAt   DateTime    @updatedAt @map("updated_at")
   createdById String      @map("created_by") @db.Uuid
   createdBy   User        @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  checks      SpeechToTextResult[]
 
   @@index([provider])
   @@index([createdById])
@@ -148,6 +154,7 @@ model DatasetSample {
   gender      String?
   locale      String?
   audio       Bytes
+  audioSha256 String   @map("audio_sha256")
   mimeType    String   @map("mime_type")
   filename    String
   byteSize    Int      @map("byte_size")
@@ -160,19 +167,27 @@ model DatasetSample {
 
   @@index([createdById])
   @@index([source])
+  @@index([audioSha256])
   @@map("dataset_samples")
 }
 
 model SpeechToTextResult {
-  id           String        @id @default(uuid()) @db.Uuid
-  engineKey    String        @map("engine_key")
-  sampleId     String        @map("sample_id") @db.Uuid
-  sample       DatasetSample @relation(fields: [sampleId], references: [id], onDelete: Cascade)
-  transcript   String
-  languageCode String?       @map("language_code")
-  createdAt    DateTime      @default(now()) @map("created_at")
+  id            String             @id @default(uuid()) @db.Uuid
+  engineKey     String             @map("engine_key")
+  sampleId      String             @map("sample_id") @db.Uuid
+  sample        DatasetSample      @relation(fields: [sampleId], references: [id], onDelete: Cascade)
+  status        SttCheckStatus
+  transcript    String?
+  languageCode  String?            @map("language_code")
+  error         String?
+  modelId       String?            @map("model_id") @db.Uuid
+  model         SpeechToTextModel? @relation(fields: [modelId], references: [id], onDelete: SetNull)
+  attempts      Int                @default(1)
+  createdAt     DateTime           @default(now()) @map("created_at")
+  lastAttemptAt DateTime           @default(now()) @map("last_attempt_at")
 
   @@unique([engineKey, sampleId])
   @@index([sampleId])
+  @@index([modelId, lastAttemptAt])
   @@map("speech_to_text_results")
 }

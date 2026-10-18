@@ -1,4 +1,5 @@
 import { Body, Controller, Post, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PreviewComparisonDto, RunCheckDto } from './dto/comparison.dto';
 import { SpeechToTextComparisonService } from './speech-to-text-comparison.service';
@@ -14,6 +15,7 @@ export class SpeechToTextComparisonController {
   }
 
   @Post('check')
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
   check(@Body() dto: RunCheckDto) {
     return this.comparison.check(dto);
   }
