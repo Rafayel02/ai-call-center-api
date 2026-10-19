@@ -124,7 +124,7 @@ export class ElevenLabsProvider implements SpeechToTextProvider {
     return { ok: true, message: 'ElevenLabs accepted this API key.' };
   }
 
-  async transcribe(config: Record<string, unknown>, audio: AudioInput): Promise<TranscriptionResult> {
+  async transcribe(config: Record<string, unknown>, audio: AudioInput, signal?: AbortSignal): Promise<TranscriptionResult> {
     const stored = this.readStored(config);
     const apiKey = decryptSecret(stored.apiKey, this.key());
     const form = new FormData();
@@ -138,6 +138,7 @@ export class ElevenLabsProvider implements SpeechToTextProvider {
         method: 'POST',
         headers: { 'xi-api-key': apiKey },
         body: form,
+        signal,
       });
     } catch {
       throw new BadRequestException('Could not reach ElevenLabs.');

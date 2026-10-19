@@ -10,7 +10,8 @@ NestJS API for the AI Call Center admin platform. It authenticates administrator
 - `text-to-speech` stores every provider in one `text_to_speech_models` table. ElevenLabs is the only provider. A model keeps the encrypted API key, the ElevenLabs model id, and the voice. The browser asks this API to speak; it never receives the key. The first time a saved model speaks a line, that audio is stored. The same model and the same line reuse it, even from two scenario steps. A new voice or provider model starts a new clip.
 - `health` checks the process and runs `SELECT 1`.
 - `organizations` stores a name and an optional description. Members, speech models, and playground data are not tied to an organization. Names are unique ignoring case and extra spaces.
-- `scenarios` belong to an organization. Each one stores a name, an optional description, an icon, and a graph of Start, Text to speech, and End steps. Text to speech keeps the line to say and an optional text-to-speech model. The browser can play that path for testing. The API does not run a scenario or a phone call.
+- `scenarios` belong to an organization. Each one stores a name, an optional description, an icon, and a graph of Start, Text to speech, Conversational loop, Topic switch, Keypad menu, and End steps. Publishing checks that a call can run the graph from Start to End and renders every fixed line as a phone (μ-law) clip.
+- `calls` runs a scenario. A call session walks the graph in this process, talks to the caller over a WebSocket in Twilio's media stream format, and records the run as a scenario execution: the events, a caller track, and a mix. The designer's Play button is a browser call: `POST /calls/browser` checks the graph and returns a one-time token, and the browser opens `/calls/browser/stream` with it.
 
 Passwords are hashed with bcrypt. API keys use AES-256-GCM. List and detail responses return only the last four characters of a key.
 
@@ -35,6 +36,8 @@ See `.env.example` for names. Do not commit real values.
 - `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` — used only to create the first admin
 - `FRONTEND_URL` — comma-separated allowed browser origins
 - `PORT`
+- `CALL_TOKEN_SECRET` — long random string that signs call tokens. Play does not start without it.
+- `PUBLIC_BASE_URL` — the API's public origin, used to build the call stream URL. Defaults to `http://localhost:PORT`.
 
 Generate an encryption key with:
 

@@ -99,7 +99,7 @@ export class OpenAiProvider implements LlmProviderClient {
     return { ok: true, message: 'OpenAI accepted this API key.' };
   }
 
-  async complete(config: Record<string, unknown>, request: LlmCompletionRequest) {
+  async complete(config: Record<string, unknown>, request: LlmCompletionRequest, signal?: AbortSignal) {
     const started = Date.now();
     const stored = this.readStored(config);
     const systemPrompt = inquirySystemPrompt(request.note, request.topics, request.defaultTopicId);
@@ -135,6 +135,7 @@ export class OpenAiProvider implements LlmProviderClient {
             },
           },
         }),
+        signal,
       });
     } catch {
       fail('Could not reach OpenAI.');

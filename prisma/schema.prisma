@@ -36,6 +36,11 @@ enum ExecutionStatus {
   FAILED
 }
 
+enum ExecutionChannel {
+  BROWSER
+  PHONE
+}
+
 enum ExecutionAudioKind {
   CALLER
   MIX
@@ -100,8 +105,10 @@ model ScenarioExecution {
   id             String          @id @db.Uuid
   scenarioId     String          @map("scenario_id") @db.Uuid
   scenario       Scenario        @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
-  startedById    String          @map("started_by") @db.Uuid
-  startedBy      User            @relation(fields: [startedById], references: [id], onDelete: Restrict)
+  startedById    String?         @map("started_by") @db.Uuid
+  startedBy      User?           @relation(fields: [startedById], references: [id], onDelete: Restrict)
+  channel        ExecutionChannel @default(BROWSER)
+  menuChoice     String?         @map("menu_choice")
   status         ExecutionStatus @default(RUNNING)
   startedAt      DateTime        @default(now()) @map("started_at")
   endedAt        DateTime?       @map("ended_at")

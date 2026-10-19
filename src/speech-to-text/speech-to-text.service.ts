@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, SttProvider } from '@prisma/client';
+import { RequestAborted } from '../common/abort';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExecutionContext } from '../scenario-executions/execution-context';
 import { ScenarioExecutionsService } from '../scenario-executions/scenario-executions.service';
@@ -83,6 +84,7 @@ export class SpeechToTextService {
     id: string,
     file?: { buffer?: Buffer; size?: number; mimetype?: string; originalname?: string },
     execution: ExecutionContext | null = null,
+    signal?: AbortSignal,
   ) {
     if (!file?.buffer?.length) throw new BadRequestException('Choose an audio file.');
     if ((file.size ?? file.buffer.length) > MAX_AUDIO_BYTES) {
@@ -103,11 +105,12 @@ export class SpeechToTextService {
       providerModel: this.providers.get(model.provider).toPublic(model.config as Record<string, unknown>).modelId,
     };
     try {
-      const result = await this.providers.get(model.provider).transcribe(model.config as Record<string, unknown>, {
-        buffer: file.buffer,
-        filename,
-        mimeType,
-      });
+      const result = await this.providers.get(model.provider).transcribe(
+        model.config as Record<string, unknown>,
+        { buffer: file.buffer, filename, mimeType },
+        signal,
+      );
+      if (signal?.aborted) throw new RequestAborted();
       await this.executions.recordTranscription(execution, {
         model: snapshot,
         transcript: result.text,
@@ -119,6 +122,7 @@ export class SpeechToTextService {
       });
       return result;
     } catch (error) {
+      if (signal?.aborted) throw new RequestAborted();
       await this.executions.recordTranscription(execution, {
         model: snapshot,
         transcript: '',

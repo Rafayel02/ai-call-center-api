@@ -7,7 +7,7 @@
 import { execSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 
-const TESTS = ['src/speech-to-text-comparison/speech-to-text-comparison.service.spec.ts'];
+const TESTS = ['src/speech-to-text-comparison/speech-to-text-comparison.service.spec.ts', 'src/calls/calls.service.spec.ts'];
 
 if (existsSync('.env')) process.loadEnvFile('.env');
 const source = process.env.DATABASE_URL;

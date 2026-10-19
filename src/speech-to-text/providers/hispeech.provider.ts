@@ -9,6 +9,7 @@ import {
   EncryptedSecret,
   secretHint,
 } from '../../common/crypto/credential-cipher';
+import { withTimeout } from '../../common/abort';
 import { AudioInput, SpeechToTextProvider, TranscriptionResult } from './speech-to-text-provider';
 
 const MODELS = ['model-23012026', 'model-01052025'] as const;
@@ -90,7 +91,7 @@ export class HiSpeechProvider implements SpeechToTextProvider {
     return [this.id, stored.modelId, stored.secureMode ? 'secure' : 'standard'].join('|');
   }
 
-  async transcribe(config: Record<string, unknown>, audio: AudioInput): Promise<TranscriptionResult> {
+  async transcribe(config: Record<string, unknown>, audio: AudioInput, signal?: AbortSignal): Promise<TranscriptionResult> {
     if (audio.buffer.length < 1000) {
       throw new BadRequestException('That recording is too short.');
     }
@@ -109,7 +110,7 @@ export class HiSpeechProvider implements SpeechToTextProvider {
           method: 'POST',
           headers: { 'x-auth-token': apiKey },
           body: form,
-          signal: AbortSignal.timeout(120_000),
+          signal: withTimeout(120_000, signal),
         },
       );
     } catch {

@@ -1,6 +1,12 @@
 import { IncomingHttpHeaders } from 'http';
 
-export type SpokenKind = 'step' | 'reply' | 'delay';
+export const SPOKEN_KINDS = ['step', 'reply', 'delay', 'menu', 'sorry'] as const;
+
+export type SpokenKind = (typeof SPOKEN_KINDS)[number];
+
+export function isSpokenKind(value: unknown): value is SpokenKind {
+  return typeof value === 'string' && (SPOKEN_KINDS as readonly string[]).includes(value);
+}
 
 export interface ExecutionContext {
   executionId: string;
@@ -43,6 +49,6 @@ export function readExecutionContext(headers: IncomingHttpHeaders): ExecutionCon
     nodeId: nodeId ? nodeId.slice(0, 80) : null,
     utteranceStartedMs: utteranceStarted != null && utteranceStarted >= 0 ? utteranceStarted : null,
     utteranceDurationMs: utteranceDuration != null && utteranceDuration >= 0 ? utteranceDuration : null,
-    ttsKind: kind === 'step' || kind === 'reply' || kind === 'delay' ? kind : null,
+    ttsKind: isSpokenKind(kind) ? kind : null,
   };
 }

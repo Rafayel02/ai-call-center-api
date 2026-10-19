@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { LlmProvider, Prisma } from '@prisma/client';
 import { z } from 'zod';
+import { RequestAborted } from '../common/abort';
 import { PrismaService } from '../prisma/prisma.service';
 import { CompleteTurnDto, CreateLlmModelDto, RouteCallDto, TestLlmDraftDto, UpdateLlmModelDto } from './dto/llm-model.dto';
 import { ConversationMessage } from './inquiry-turn';
@@ -128,7 +129,7 @@ export class LlmService {
     return this.runTest(provider, provider.validateCreate(dto.config));
   }
 
-  async complete(id: string, dto: CompleteTurnDto, execution: ExecutionContext | null = null) {
+  async complete(id: string, dto: CompleteTurnDto, execution: ExecutionContext | null = null, signal?: AbortSignal) {
     const parsed = completeSchema.safeParse(dto);
     if (!parsed.success) {
       const topicIssue = parsed.error.issues.some((issue) => issue.path[0] === 'topics' || issue.path[0] === 'defaultTopicId');
@@ -154,7 +155,7 @@ export class LlmService {
       providerModel: this.providers.get(model.provider).toPublic(model.config as Record<string, unknown>).modelId,
     };
     try {
-      const result = await this.providers.get(model.provider).complete(model.config as Record<string, unknown>, request);
+      const result = await this.providers.get(model.provider).complete(model.config as Record<string, unknown>, request, signal);
       await this.executions.recordLlm(execution, {
         model: snapshot,
         systemPrompt: result.trace.systemPrompt,
@@ -169,6 +170,7 @@ export class LlmService {
       });
       return result.turn;
     } catch (error) {
+      if (signal?.aborted) throw new RequestAborted();
       const trace = error instanceof LlmCompletionError ? error.trace : null;
       await this.executions.recordLlm(execution, {
         model: snapshot,

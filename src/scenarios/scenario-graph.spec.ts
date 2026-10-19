@@ -147,6 +147,81 @@ test('accepts a topic switch whose topics both reach end', () => {
   assert.equal(graph.edges.find((edge) => edge.id === 'e-3')?.sourceHandle, 'hours');
 });
 
+const menu = {
+  id: 'menu-1',
+  type: 'menu',
+  position: { x: 10, y: 10 },
+  data: {
+    prompts: [{ ttsModelId: null, text: ' For Armenian press 1. ' }],
+    options: [
+      { id: 'hy', key: '1', label: 'Armenian' },
+      { id: 'ru', key: '2', label: 'Russian' },
+    ],
+    defaultOptionId: 'hy',
+  },
+};
+
+test('accepts a keypad menu whose options reach end and fills its defaults', () => {
+  const graph = parseScenarioGraph({
+    nodes: [start, menu, speech, end],
+    edges: [
+      { id: 'e-1', source: 'start', target: 'menu-1' },
+      { id: 'e-2', source: 'menu-1', sourceHandle: 'hy', target: 'tts-1' },
+      { id: 'e-3', source: 'menu-1', sourceHandle: 'ru', target: 'end' },
+      { id: 'e-4', source: 'tts-1', target: 'end' },
+    ],
+  });
+  const parsed = graph.nodes.find((node) => node.id === 'menu-1');
+  assert.equal(parsed?.type, 'menu');
+  if (parsed?.type !== 'menu') return;
+  assert.equal(parsed.data.prompts[0]?.text, 'For Armenian press 1.');
+  assert.equal(parsed.data.waitSeconds, 6);
+  assert.equal(parsed.data.repeats, 1);
+});
+
+test('rejects a keypad menu option that does not lead to end', () => {
+  assert.throws(
+    () =>
+      parseScenarioGraph({
+        nodes: [start, menu, end],
+        edges: [{ id: 'e-1', source: 'menu-1', sourceHandle: 'hy', target: 'end' }],
+      }),
+    /Connect key 2 through to End/,
+  );
+});
+
+test('rejects two menu options on one key, a missing default, and a connection without an option', () => {
+  const options = [
+    { id: 'hy', key: '1', label: 'Armenian' },
+    { id: 'ru', key: '1', label: 'Russian' },
+  ];
+  assert.throws(() => parseScenarioGraph({ nodes: [{ ...menu, data: { ...menu.data, options } }], edges: [] }), /Key 1 is used by two/);
+  assert.throws(
+    () => parseScenarioGraph({ nodes: [{ ...menu, data: { ...menu.data, defaultOptionId: 'en' } }], edges: [] }),
+    /no key is pressed/,
+  );
+  assert.throws(
+    () => parseScenarioGraph({ nodes: [menu, end], edges: [{ id: 'e-1', source: 'menu-1', target: 'end' }] }),
+    /Connect each menu option/,
+  );
+});
+
+test('fills the new loop settings and checks their range', () => {
+  const graph = parseScenarioGraph({
+    nodes: [{ id: 'loop-1', type: 'loop', position: { x: 0, y: 0 }, data: { sorryLine: ' Sorry, something went wrong. ' } }],
+    edges: [],
+  });
+  const loop = graph.nodes[0];
+  assert.equal(loop?.type, 'loop');
+  if (loop?.type !== 'loop') return;
+  assert.equal(loop.data.noInputSeconds, 15);
+  assert.equal(loop.data.sorryLine, 'Sorry, something went wrong.');
+  assert.throws(
+    () => parseScenarioGraph({ nodes: [{ id: 'loop-1', type: 'loop', position: { x: 0, y: 0 }, data: { noInputSeconds: 2 } }], edges: [] }),
+    /No input must be between 5 and 60/,
+  );
+});
+
 test('rejects a topic that does not lead to end', () => {
   assert.throws(
     () =>

@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { ExecutionAudioKind, ExecutionStatus, Prisma } from '@prisma/client';
+import { ExecutionAudioKind, ExecutionChannel, ExecutionStatus, Prisma } from '@prisma/client';
+import { ulawToWav, wavDurationMs } from '../common/audio/wav';
 import { inquirySystemPrompt, PromptTopic } from '../llm/inquiry-turn';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateScenarioExecutionDto, ExecutionEventDto, FinishScenarioExecutionDto } from './dto/scenario-execution.dto';
@@ -8,7 +9,7 @@ import { speechSegments } from './speech-segments';
 
 export const MAX_EXECUTION_AUDIO_BYTES = 30 * 1024 * 1024;
 const STALE_MS = 2 * 60 * 1000;
-const STALE_MESSAGE = 'The browser stopped reporting.';
+export const STALE_MESSAGE = 'The call stopped reporting.';
 const PEAKS = 240;
 const MP3_BITRATE = 128_000;
 
@@ -39,9 +40,30 @@ const summarySelect = {
   topicId: true,
   topicLabel: true,
   errorMessage: true,
+  channel: true,
+  menuChoice: true,
   startedBy: { select: { email: true } },
   audio: { where: { kind: ExecutionAudioKind.MIX }, select: { id: true } },
 } satisfies Prisma.ScenarioExecutionSelect;
+
+/** One event the call session writes. The session numbers them itself. */
+export interface SessionEvent {
+  seq: number;
+  offsetMs: number;
+  type: string;
+  nodeId: string | null;
+  payload: Record<string, unknown>;
+}
+
+export interface SessionEnding {
+  status: 'FINISHED' | 'STOPPED' | 'FAILED';
+  durationMs: number;
+  inquiry: string | null;
+  topicId: string | null;
+  topicLabel: string | null;
+  menuChoice: string | null;
+  errorMessage: string | null;
+}
 
 type SummaryRow = Prisma.ScenarioExecutionGetPayload<{ select: typeof summarySelect }>;
 
@@ -173,6 +195,82 @@ export class ScenarioExecutionsService {
       }
       throw error;
     }
+  }
+
+  /** Creates the execution for a call the session runs. The API chooses the id. */
+  async startSession(input: { scenarioId: string; graph: unknown; channel: ExecutionChannel; startedById: string | null }) {
+    const row = await this.prisma.scenarioExecution.create({
+      data: {
+        id: crypto.randomUUID(),
+        scenarioId: input.scenarioId,
+        startedById: input.startedById,
+        channel: input.channel,
+        graph: input.graph as Prisma.InputJsonValue,
+      },
+      select: { id: true },
+    });
+    return row.id;
+  }
+
+  /** Writes events from the session. A repeated sequence number replaces that event, so a retry never duplicates one. */
+  async writeSessionEvents(id: string, events: SessionEvent[]) {
+    for (const event of events) {
+      const payload = scrub(event.payload) as Prisma.InputJsonValue;
+      await this.prisma.scenarioExecutionEvent.upsert({
+        where: { executionId_clientSeq: { executionId: id, clientSeq: event.seq } },
+        create: { executionId: id, clientSeq: event.seq, offsetMs: event.offsetMs, type: event.type, nodeId: event.nodeId, payload },
+        update: { offsetMs: event.offsetMs, type: event.type, nodeId: event.nodeId, payload },
+      });
+    }
+    await this.touch(id);
+  }
+
+  heartbeatSession(id: string) {
+    return this.touch(id);
+  }
+
+  /** Stores the caller track and the mix that the session built, both WAV. Returns false when either was too large. */
+  async storeRecordings(id: string, input: { caller: Buffer; mix: Buffer; peaks: number[] }) {
+    let stored = true;
+    for (const [kind, audio] of [
+      [ExecutionAudioKind.CALLER, input.caller],
+      [ExecutionAudioKind.MIX, input.mix],
+    ] as const) {
+      if (audio.length > MAX_EXECUTION_AUDIO_BYTES) {
+        stored = false;
+        continue;
+      }
+      await this.upsertTrack(id, kind, { buffer: audio, mimetype: 'audio/wav' });
+    }
+    const peaks = this.readPeaks(JSON.stringify(input.peaks));
+    await this.prisma.scenarioExecution.update({
+      where: { id },
+      data: {
+        ...(peaks ? { peaks } : {}),
+        ...(input.caller.length <= MAX_EXECUTION_AUDIO_BYTES ? { callerMime: 'audio/wav' } : {}),
+        ...(input.mix.length <= MAX_EXECUTION_AUDIO_BYTES ? { mixMime: 'audio/wav' } : {}),
+        lastActivityAt: new Date(),
+      },
+    });
+    return stored;
+  }
+
+  /** Closes an execution the session ran. A second close is ignored. */
+  async closeSession(id: string, ending: SessionEnding) {
+    await this.prisma.scenarioExecution.updateMany({
+      where: { id, status: ExecutionStatus.RUNNING },
+      data: {
+        status: ending.status,
+        durationMs: ending.durationMs,
+        inquiry: blankToNull(ending.inquiry),
+        topicId: blankToNull(ending.topicId),
+        topicLabel: blankToNull(ending.topicLabel),
+        menuChoice: blankToNull(ending.menuChoice),
+        errorMessage: blankToNull(ending.errorMessage),
+        endedAt: new Date(),
+        lastActivityAt: new Date(),
+      },
+    });
   }
 
   async addEvents(id: string, events: ExecutionEventDto[]) {
@@ -402,11 +500,14 @@ export class ScenarioExecutionsService {
       });
       return;
     }
-    const mimeType = input.mimeType || 'audio/mpeg';
-    const durationMs = /mpeg|mp3/i.test(mimeType) ? mp3DurationMs(input.audio.length) : null;
+    // Browsers cannot play raw μ-law, so a phone clip is stored as WAV for the debug view.
+    const phone = /x-mulaw/i.test(input.mimeType ?? '');
+    const audio = phone ? ulawToWav(input.audio) : input.audio;
+    const mimeType = phone ? 'audio/wav' : input.mimeType || 'audio/mpeg';
+    const durationMs = /mpeg|mp3/i.test(mimeType) ? mp3DurationMs(audio.length) : /wav/i.test(mimeType) ? wavDurationMs(audio) : null;
     await this.recordProviderEvent(ctx, {
       type: 'tts.ready',
-      audio: { buffer: input.audio, mimeType, kind: ExecutionAudioKind.TTS },
+      audio: { buffer: audio, mimeType, kind: ExecutionAudioKind.TTS },
       payload: {
         ...input.model,
         text: input.text,
@@ -649,7 +750,9 @@ export class ScenarioExecutionsService {
       inquiry: row.inquiry,
       topicLabel: row.topicLabel,
       errorMessage: row.errorMessage,
-      startedBy: { email: row.startedBy.email },
+      channel: row.channel,
+      menuChoice: row.menuChoice,
+      startedBy: row.startedBy ? { email: row.startedBy.email } : null,
       hasMix: row.audio.length > 0,
     };
   }

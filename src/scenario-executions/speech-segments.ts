@@ -1,3 +1,5 @@
+import { isSpokenKind, SpokenKind } from './execution-context';
+
 export interface SegmentSource {
   id: string;
   type: string;
@@ -8,7 +10,7 @@ export interface SegmentSource {
 export interface SpeechSegment {
   eventId: string;
   speaker: 'caller' | 'agent';
-  kind: 'step' | 'reply' | 'delay' | null;
+  kind: SpokenKind | null;
   text: string;
   startMs: number;
   endMs: number;
@@ -31,8 +33,7 @@ function finite(payload: Record<string, unknown>, key: string) {
 }
 
 function kindOf(value: unknown): SpeechSegment['kind'] {
-  if (value === 'step' || value === 'reply' || value === 'delay') return value;
-  return null;
+  return isSpokenKind(value) ? value : null;
 }
 
 export function speechSegments(events: SegmentSource[]): SpeechSegment[] {

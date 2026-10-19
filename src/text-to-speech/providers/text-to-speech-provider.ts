@@ -10,6 +10,14 @@ export interface TtsVoice {
   name: string;
 }
 
+/** `mp3_44100_128` is what the browser plays. `ulaw_8000` is raw 8 kHz μ-law, the format of a phone call. */
+export type SpeechFormat = 'mp3_44100_128' | 'ulaw_8000';
+
+export const SPEECH_FORMAT_MIME: Record<SpeechFormat, string> = {
+  mp3_44100_128: 'audio/mpeg',
+  ulaw_8000: 'audio/x-mulaw',
+};
+
 export interface TextToSpeechProvider {
   readonly id: TtsProvider;
   readonly supportsConnectionTest: boolean;
@@ -20,5 +28,5 @@ export interface TextToSpeechProvider {
   testDraft?(config: unknown): Promise<ConnectionTestResult>;
   listVoices(config: unknown): Promise<TtsVoice[]>;
   listStoredVoices(config: Record<string, unknown>): Promise<TtsVoice[]>;
-  speak(config: Record<string, unknown>, text: string): Promise<Buffer>;
+  speak(config: Record<string, unknown>, text: string, format: SpeechFormat, signal?: AbortSignal): Promise<Buffer>;
 }

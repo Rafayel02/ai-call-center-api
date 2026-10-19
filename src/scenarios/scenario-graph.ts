@@ -1,6 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 
-export const SCENARIO_NODE_TYPES = ['start', 'end', 'tts', 'loop', 'switch'] as const;
+export const SCENARIO_NODE_TYPES = ['start', 'end', 'tts', 'loop', 'switch', 'menu'] as const;
 
 export type ScenarioNodeType = (typeof SCENARIO_NODE_TYPES)[number];
 
@@ -16,6 +16,27 @@ export interface LoopNodeData {
   silenceSeconds: number;
   fillers: string[];
   maxTurns: number;
+  noInputSeconds: number;
+  sorryLine: string;
+}
+
+export interface MenuPrompt {
+  ttsModelId: string | null;
+  text: string;
+}
+
+export interface MenuOption {
+  id: string;
+  key: string;
+  label: string;
+}
+
+export interface MenuNodeData {
+  prompts: MenuPrompt[];
+  options: MenuOption[];
+  defaultOptionId: string;
+  waitSeconds: number;
+  repeats: number;
 }
 
 export interface SwitchTopic {
@@ -32,7 +53,8 @@ export type ScenarioGraphNode =
   | { id: string; type: 'start' | 'end'; position: { x: number; y: number }; data: Record<string, never> }
   | { id: string; type: 'tts'; position: { x: number; y: number }; data: TtsNodeData }
   | { id: string; type: 'loop'; position: { x: number; y: number }; data: LoopNodeData }
-  | { id: string; type: 'switch'; position: { x: number; y: number }; data: SwitchNodeData };
+  | { id: string; type: 'switch'; position: { x: number; y: number }; data: SwitchNodeData }
+  | { id: string; type: 'menu'; position: { x: number; y: number }; data: MenuNodeData };
 
 export interface ScenarioGraphEdge {
   id: string;
@@ -47,14 +69,22 @@ export interface ScenarioGraph {
 }
 
 const CONNECTIONS: Record<ScenarioNodeType, readonly ScenarioNodeType[]> = {
-  start: ['tts', 'loop'],
+  start: ['tts', 'loop', 'menu'],
   end: [],
-  tts: ['tts', 'loop', 'switch', 'end'],
-  loop: ['tts', 'loop', 'switch', 'end'],
-  switch: ['tts', 'loop', 'switch', 'end'],
+  tts: ['tts', 'loop', 'switch', 'menu', 'end'],
+  loop: ['tts', 'loop', 'switch', 'menu', 'end'],
+  switch: ['tts', 'loop', 'switch', 'menu', 'end'],
+  menu: ['tts', 'loop', 'switch', 'menu', 'end'],
 };
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
+
+/** The handles a branching step offers: one per topic or menu option. Other steps have none. */
+export function branchHandles(node: ScenarioGraphNode): string[] | null {
+  if (node.type === 'switch') return node.data.topics.map((topic) => topic.id);
+  if (node.type === 'menu') return node.data.options.map((option) => option.id);
+  return null;
+}
 
 export function emptyScenarioGraph(): ScenarioGraph {
   return { nodes: [], edges: [] };
@@ -97,11 +127,12 @@ export function parseScenarioGraph(input: unknown): ScenarioGraph {
     pairs.add(pair);
     if (edge.sourceHandle) {
       const lane = `${edge.source}:${edge.sourceHandle}`;
-      if (topicLanes.has(lane)) throw new BadRequestException('A topic can lead to only one next step.');
+      if (topicLanes.has(lane)) throw new BadRequestException('A topic or menu option can lead to only one next step.');
       topicLanes.add(lane);
     }
   }
   assertTopicsReachEnd(nodes, edges);
+  assertOptionsReachEnd(nodes, edges);
 
   nodes.sort((left, right) => left.id.localeCompare(right.id));
   edges.sort((left, right) => left.id.localeCompare(right.id));
@@ -124,7 +155,7 @@ function parseNode(value: unknown): ScenarioGraphNode {
   if (typeof node.id !== 'string' || !ID_PATTERN.test(node.id)) {
     throw new BadRequestException('A scenario step has an invalid id.');
   }
-  if (node.type !== 'start' && node.type !== 'end' && node.type !== 'tts' && node.type !== 'loop' && node.type !== 'switch') {
+  if (!isNodeType(node.type)) {
     throw new BadRequestException('A scenario step has an unknown type.');
   }
   const position = parsePosition(node.position);
@@ -137,7 +168,14 @@ function parseNode(value: unknown): ScenarioGraphNode {
   if (node.type === 'switch') {
     return { id: node.id, type: node.type, position, data: parseSwitchData(node.data) };
   }
+  if (node.type === 'menu') {
+    return { id: node.id, type: node.type, position, data: parseMenuData(node.data) };
+  }
   return { id: node.id, type: node.type, position, data: {} };
+}
+
+function isNodeType(value: unknown): value is ScenarioNodeType {
+  return typeof value === 'string' && (SCENARIO_NODE_TYPES as readonly string[]).includes(value);
 }
 
 function parsePosition(value: unknown): { x: number; y: number } {
@@ -166,7 +204,69 @@ function parseLoopData(value: unknown): LoopNodeData {
     silenceSeconds: parseBoundedInt(data.silenceSeconds, 4, 1, 30, 'Silence must be between 1 and 30 seconds.'),
     fillers: parseFillers(data.fillers),
     maxTurns: parseBoundedInt(data.maxTurns, 8, 1, 20, 'Max turns must be between 1 and 20.'),
+    noInputSeconds: parseBoundedInt(data.noInputSeconds, 15, 5, 60, 'No input must be between 5 and 60 seconds.'),
+    sorryLine: parseLine(data.sorryLine, 300, 'A sorry line can be at most 300 characters.'),
   };
+}
+
+function parseLine(value: unknown, max: number, message: string): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string' || value.trim().length > max) {
+    throw new BadRequestException(message);
+  }
+  return value.trim();
+}
+
+const MENU_KEY = /^[0-9]$/;
+
+function parseMenuData(value: unknown): MenuNodeData {
+  const data = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  if (!Array.isArray(data.prompts) || data.prompts.length < 1 || data.prompts.length > 4) {
+    throw new BadRequestException('A keypad menu needs 1 to 4 prompt lines.');
+  }
+  const prompts = data.prompts.map((item): MenuPrompt => {
+    const prompt = item && typeof item === 'object' && !Array.isArray(item) ? (item as Record<string, unknown>) : {};
+    return {
+      ttsModelId: parseModelId(prompt.ttsModelId, 'Choose a text-to-speech model for each menu prompt.'),
+      text: parseLine(prompt.text, 500, 'A menu prompt can be at most 500 characters.'),
+    };
+  });
+  if (!Array.isArray(data.options) || data.options.length < 1 || data.options.length > 10) {
+    throw new BadRequestException('A keypad menu needs 1 to 10 options.');
+  }
+  const options = data.options.map(parseMenuOption);
+  const ids = new Set<string>();
+  const keys = new Set<string>();
+  for (const option of options) {
+    if (ids.has(option.id)) throw new BadRequestException('Each menu option needs its own id.');
+    ids.add(option.id);
+    if (keys.has(option.key)) throw new BadRequestException(`Key ${option.key} is used by two menu options.`);
+    keys.add(option.key);
+  }
+  if (typeof data.defaultOptionId !== 'string' || !ids.has(data.defaultOptionId)) {
+    throw new BadRequestException('Choose the menu option used when no key is pressed.');
+  }
+  return {
+    prompts,
+    options,
+    defaultOptionId: data.defaultOptionId,
+    waitSeconds: parseBoundedInt(data.waitSeconds, 6, 2, 15, 'The wait for a key must be between 2 and 15 seconds.'),
+    repeats: parseBoundedInt(data.repeats, 1, 0, 3, 'A menu can repeat 0 to 3 times.'),
+  };
+}
+
+function parseMenuOption(value: unknown): MenuOption {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new BadRequestException('A menu option is invalid.');
+  }
+  const option = value as { id?: unknown; key?: unknown; label?: unknown };
+  if (typeof option.id !== 'string' || !ID_PATTERN.test(option.id)) {
+    throw new BadRequestException('A menu option has an invalid id.');
+  }
+  if (typeof option.key !== 'string' || !MENU_KEY.test(option.key)) {
+    throw new BadRequestException('Each menu option needs a key from 0 to 9.');
+  }
+  return { id: option.id, key: option.key, label: parseLine(option.label, 80, 'A menu option label can be at most 80 characters.') };
 }
 
 function parseModelId(value: unknown, message: string): string | null {
@@ -278,6 +378,19 @@ function assertTopicsReachEnd(nodes: ScenarioGraphNode[], edges: ScenarioGraphEd
   }
 }
 
+function assertOptionsReachEnd(nodes: ScenarioGraphNode[], edges: ScenarioGraphEdge[]) {
+  for (const node of nodes) {
+    if (node.type !== 'menu') continue;
+    for (const option of node.data.options) {
+      const edge = edges.find((item) => item.source === node.id && item.sourceHandle === option.id);
+      if (!edge) throw new BadRequestException(`Connect key ${option.key} through to End.`);
+      if (!leadsToEnd(edge.target, nodes, edges, new Set([node.id]))) {
+        throw new BadRequestException('Every menu option must lead to End.');
+      }
+    }
+  }
+}
+
 function leadsToEnd(nodeId: string, nodes: ScenarioGraphNode[], edges: ScenarioGraphEdge[], seen: Set<string>): boolean {
   if (seen.has(nodeId)) return false;
   const node = nodes.find((item) => item.id === nodeId);
@@ -285,9 +398,10 @@ function leadsToEnd(nodeId: string, nodes: ScenarioGraphNode[], edges: ScenarioG
   if (node.type === 'end') return true;
   const nextSeen = new Set(seen);
   nextSeen.add(nodeId);
-  if (node.type === 'switch') {
-    return node.data.topics.every((topic) => {
-      const edge = edges.find((item) => item.source === node.id && item.sourceHandle === topic.id);
+  const handles = branchHandles(node);
+  if (handles) {
+    return handles.every((handle) => {
+      const edge = edges.find((item) => item.source === node.id && item.sourceHandle === handle);
       return edge ? leadsToEnd(edge.target, nodes, edges, nextSeen) : false;
     });
   }
@@ -313,7 +427,7 @@ function parseEdge(value: unknown, nodes: ScenarioGraphNode[]): ScenarioGraphEdg
     throw new BadRequestException('A connection points at a missing step.');
   }
   if (!CONNECTIONS[source.type].includes(target.type)) {
-    throw new BadRequestException('Connect Start to Text to speech or Conversational Loop, then continue through to End.');
+    throw new BadRequestException('Connect Start to Text to speech, Conversational Loop, or Keypad menu, then continue through to End.');
   }
   let sourceHandle: string | undefined;
   if (edge.sourceHandle !== undefined && edge.sourceHandle !== null) {
@@ -322,12 +436,15 @@ function parseEdge(value: unknown, nodes: ScenarioGraphNode[]): ScenarioGraphEdg
     }
     sourceHandle = edge.sourceHandle;
   }
-  if (source.type === 'switch') {
-    if (!sourceHandle || !source.data.topics.some((topic) => topic.id === sourceHandle)) {
-      throw new BadRequestException('Connect each topic to its next step.');
+  const handles = branchHandles(source);
+  if (handles) {
+    if (!sourceHandle || !handles.includes(sourceHandle)) {
+      throw new BadRequestException(
+        source.type === 'menu' ? 'Connect each menu option to its next step.' : 'Connect each topic to its next step.',
+      );
     }
   } else if (sourceHandle) {
-    throw new BadRequestException('Only a topic switch chooses a direction.');
+    throw new BadRequestException('Only a topic switch or a keypad menu chooses a direction.');
   }
   return sourceHandle
     ? { id: edge.id, source: edge.source, target: edge.target, sourceHandle }

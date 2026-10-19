@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AuthModule } from './auth/auth.module';
+import { CallsModule } from './calls/calls.module';
 import { DatasetModule } from './dataset/dataset.module';
 import { HealthModule } from './health/health.module';
 import { LlmModule } from './llm/llm.module';
@@ -30,6 +31,7 @@ import { UsersModule } from './users/users.module';
     OrganizationsModule,
     ScenariosModule,
     ScenarioExecutionsModule,
+    CallsModule,
     HealthModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

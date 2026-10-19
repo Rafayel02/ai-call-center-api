@@ -1,11 +1,12 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, StreamableFile } from '@nestjs/common';
 import { Prisma, TtsProvider } from '@prisma/client';
+import { RequestAborted } from '../common/abort';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExecutionContext } from '../scenario-executions/execution-context';
 import { ScenarioExecutionsService } from '../scenario-executions/scenario-executions.service';
 import { CreateTextToSpeechModelDto, TestTextToSpeechDraftDto, UpdateTextToSpeechModelDto } from './dto/text-to-speech-model.dto';
 import { TtsProviderRegistry } from './providers/provider.registry';
-import { TextToSpeechProvider } from './providers/text-to-speech-provider';
+import { SPEECH_FORMAT_MIME, SpeechFormat, TextToSpeechProvider } from './providers/text-to-speech-provider';
 import { speechClipKey } from './speech-clip';
 
 @Injectable()
@@ -99,6 +100,12 @@ export class TextToSpeechService {
   }
 
   async speak(id: string, text: string, execution: ExecutionContext | null = null) {
+    const clip = await this.clip(id, text, 'mp3_44100_128', execution);
+    return this.audioFile(clip.audio, clip.mimeType);
+  }
+
+  /** A stored clip in the given format, generated the first time. Records `tts.ready` or `tts.failed` when `execution` is set. */
+  async clip(id: string, text: string, format: SpeechFormat, execution: ExecutionContext | null = null, signal?: AbortSignal) {
     const spoken = text.trim();
     if (!spoken) throw new BadRequestException('Enter the text to speak.');
     if (spoken.length > 5000) throw new BadRequestException('Text can be at most 5000 characters.');
@@ -121,7 +128,8 @@ export class TextToSpeechService {
     };
     const started = Date.now();
     try {
-      const clip = await this.loadOrCreateClip(model.id, provider, config, providerModelId, voiceId, spoken);
+      const clip = await this.loadOrCreateClip(model.id, provider, config, providerModelId, voiceId, spoken, format, signal);
+      if (signal?.aborted) throw new RequestAborted();
       await this.executions.recordSpeech(execution, {
         model: snapshot,
         text: spoken,
@@ -129,8 +137,9 @@ export class TextToSpeechService {
         audio: clip.audio,
         mimeType: clip.mimeType,
       });
-      return this.audioFile(clip.audio, clip.mimeType);
+      return clip;
     } catch (error) {
+      if (signal?.aborted) throw new RequestAborted();
       await this.executions.recordSpeech(execution, {
         model: snapshot,
         text: spoken,
@@ -148,8 +157,11 @@ export class TextToSpeechService {
     providerModelId: string,
     voiceId: string,
     spoken: string,
+    format: SpeechFormat,
+    signal?: AbortSignal,
   ) {
-    const cacheKey = speechClipKey({ modelId, providerModelId, voiceId, text: spoken });
+    const cacheKey = speechClipKey({ modelId, providerModelId, voiceId, text: spoken, format });
+    const mimeType = SPEECH_FORMAT_MIME[format];
     const cached = await this.prisma.textToSpeechClip.findUnique({
       where: { cacheKey },
       select: { audio: true, mimeType: true },
@@ -159,7 +171,7 @@ export class TextToSpeechService {
       return { audio: Buffer.from(cached.audio), mimeType: cached.mimeType };
     }
 
-    const generated = await provider.speak(config, spoken);
+    const generated = await provider.speak(config, spoken, format, signal);
     try {
       await this.prisma.textToSpeechClip.create({
         data: {
@@ -169,7 +181,7 @@ export class TextToSpeechService {
           voiceId,
           text: spoken,
           audio: Uint8Array.from(generated),
-          mimeType: 'audio/mpeg',
+          mimeType,
           byteSize: generated.length,
         },
       });
@@ -182,7 +194,7 @@ export class TextToSpeechService {
       });
       if (winner) return { audio: Buffer.from(winner.audio), mimeType: winner.mimeType };
     }
-    return { audio: generated, mimeType: 'audio/mpeg' };
+    return { audio: generated, mimeType };
   }
 
   private audioFile(audio: Buffer, mimeType: string) {

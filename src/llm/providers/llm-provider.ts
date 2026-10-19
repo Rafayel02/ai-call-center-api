@@ -62,6 +62,6 @@ export interface LlmProviderClient {
   validateUpdate(config: unknown, existing: Record<string, unknown>): Record<string, unknown>;
   toPublic(config: Record<string, unknown>): PublicLlmConfig;
   test?(config: Record<string, unknown>): Promise<ConnectionTestResult>;
-  complete(config: Record<string, unknown>, request: LlmCompletionRequest): Promise<LlmCompletionResult>;
+  complete(config: Record<string, unknown>, request: LlmCompletionRequest, signal?: AbortSignal): Promise<LlmCompletionResult>;
   route(config: Record<string, unknown>, request: LlmRouteRequest): Promise<{ topicId: string }>;
 }

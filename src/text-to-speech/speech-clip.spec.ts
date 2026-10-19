@@ -13,6 +13,13 @@ test('the same model and text always map to one clip', () => {
   assert.equal(speechClipKey(base), speechClipKey({ ...base }));
 });
 
+test('an MP3 clip keeps the key it had before formats, and a phone clip gets its own', () => {
+  const key = speechClipKey(base);
+  assert.equal(key, '0ff76eda945336d6e98d9fcb49f7e408afe06cd6249a123799a4462f0dc4567f');
+  assert.equal(speechClipKey({ ...base, format: 'mp3_44100_128' }), key);
+  assert.notEqual(speechClipKey({ ...base, format: 'ulaw_8000' }), key);
+});
+
 test('a different line, voice, provider model, or saved model is a new clip', () => {
   const key = speechClipKey(base);
   assert.notEqual(key, speechClipKey({ ...base, text: 'Hello.' }));

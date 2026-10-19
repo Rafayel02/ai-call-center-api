@@ -10,6 +10,6 @@ import { SpeechToTextService } from './speech-to-text.service';
   imports: [ScenarioExecutionsModule],
   controllers: [SpeechToTextController],
   providers: [SpeechToTextService, ProviderRegistry, ElevenLabsProvider, HiSpeechProvider],
-  exports: [ProviderRegistry],
+  exports: [ProviderRegistry, SpeechToTextService],
 })
 export class SpeechToTextModule {}
