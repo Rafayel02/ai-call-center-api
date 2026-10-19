@@ -12,6 +12,35 @@ export interface ConnectionTestResult {
   message: string;
 }
 
+export interface LlmUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+export interface LlmCallTrace {
+  systemPrompt: string;
+  messages: Array<{ role: string; content: string }>;
+  raw: unknown;
+  usage: LlmUsage | null;
+  latencyMs: number;
+}
+
+export interface LlmCompletionResult {
+  turn: InquiryTurn;
+  trace: LlmCallTrace;
+}
+
+export class LlmCompletionError extends Error {
+  readonly trace: LlmCallTrace;
+
+  constructor(message: string, trace: LlmCallTrace) {
+    super(message);
+    this.name = 'LlmCompletionError';
+    this.trace = trace;
+  }
+}
+
 export interface LlmCompletionRequest {
   messages: ConversationMessage[];
   note?: string;
@@ -33,6 +62,6 @@ export interface LlmProviderClient {
   validateUpdate(config: unknown, existing: Record<string, unknown>): Record<string, unknown>;
   toPublic(config: Record<string, unknown>): PublicLlmConfig;
   test?(config: Record<string, unknown>): Promise<ConnectionTestResult>;
-  complete(config: Record<string, unknown>, request: LlmCompletionRequest): Promise<InquiryTurn>;
+  complete(config: Record<string, unknown>, request: LlmCompletionRequest): Promise<LlmCompletionResult>;
   route(config: Record<string, unknown>, request: LlmRouteRequest): Promise<{ topicId: string }>;
 }

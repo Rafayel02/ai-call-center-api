@@ -8,6 +8,7 @@ import { HealthModule } from './health/health.module';
 import { LlmModule } from './llm/llm.module';
 import { OrganizationsModule } from './organizations/organizations.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { ScenarioExecutionsModule } from './scenario-executions/scenario-executions.module';
 import { ScenariosModule } from './scenarios/scenarios.module';
 import { SpeechToTextModule } from './speech-to-text/speech-to-text.module';
 import { SpeechToTextComparisonModule } from './speech-to-text-comparison/speech-to-text-comparison.module';
@@ -28,6 +29,7 @@ import { UsersModule } from './users/users.module';
     DatasetModule,
     OrganizationsModule,
     ScenariosModule,
+    ScenarioExecutionsModule,
     HealthModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

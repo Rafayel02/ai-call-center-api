@@ -4,9 +4,11 @@ import { z } from 'zod';
 import { PrismaService } from '../prisma/prisma.service';
 import { CompleteTurnDto, CreateLlmModelDto, RouteCallDto, TestLlmDraftDto, UpdateLlmModelDto } from './dto/llm-model.dto';
 import { ConversationMessage } from './inquiry-turn';
-import { RouteTopic } from './topic-route';
+import { ExecutionContext } from '../scenario-executions/execution-context';
+import { ScenarioExecutionsService } from '../scenario-executions/scenario-executions.service';
+import { LlmCompletionError, LlmProviderClient } from './providers/llm-provider';
 import { ProviderRegistry } from './providers/provider.registry';
-import { LlmProviderClient } from './providers/llm-provider';
+import { RouteTopic } from './topic-route';
 
 const messageSchema = z.object({
   role: z.enum(['user', 'assistant']),
@@ -59,6 +61,7 @@ export class LlmService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly providers: ProviderRegistry,
+    private readonly executions: ScenarioExecutionsService,
   ) {}
 
   providersAvailable() {
@@ -125,7 +128,7 @@ export class LlmService {
     return this.runTest(provider, provider.validateCreate(dto.config));
   }
 
-  async complete(id: string, dto: CompleteTurnDto) {
+  async complete(id: string, dto: CompleteTurnDto, execution: ExecutionContext | null = null) {
     const parsed = completeSchema.safeParse(dto);
     if (!parsed.success) {
       const topicIssue = parsed.error.issues.some((issue) => issue.path[0] === 'topics' || issue.path[0] === 'defaultTopicId');
@@ -138,12 +141,50 @@ export class LlmService {
       content: message.content,
       interrupted: message.interrupted,
     }));
-    return this.providers.get(model.provider).complete(model.config as Record<string, unknown>, {
+    const request = {
       messages,
       note: parsed.data.note,
       topics: parsed.data.topics,
       defaultTopicId: parsed.data.defaultTopicId,
-    });
+    };
+    const snapshot = {
+      modelId: model.id,
+      modelName: model.name,
+      provider: model.provider,
+      providerModel: this.providers.get(model.provider).toPublic(model.config as Record<string, unknown>).modelId,
+    };
+    try {
+      const result = await this.providers.get(model.provider).complete(model.config as Record<string, unknown>, request);
+      await this.executions.recordLlm(execution, {
+        model: snapshot,
+        systemPrompt: result.trace.systemPrompt,
+        messages: result.trace.messages,
+        note: request.note ?? null,
+        topics: request.topics ?? null,
+        defaultTopicId: request.defaultTopicId ?? null,
+        raw: result.trace.raw,
+        turn: result.turn,
+        latencyMs: result.trace.latencyMs,
+        usage: result.trace.usage,
+      });
+      return result.turn;
+    } catch (error) {
+      const trace = error instanceof LlmCompletionError ? error.trace : null;
+      await this.executions.recordLlm(execution, {
+        model: snapshot,
+        systemPrompt: trace?.systemPrompt ?? '',
+        messages: trace?.messages ?? messages,
+        note: request.note ?? null,
+        topics: request.topics ?? null,
+        defaultTopicId: request.defaultTopicId ?? null,
+        raw: trace?.raw ?? null,
+        latencyMs: trace?.latencyMs ?? 0,
+        usage: null,
+        error: error instanceof Error ? error.message : 'The model did not answer.',
+      });
+      if (error instanceof LlmCompletionError) throw new BadRequestException(error.message);
+      throw error;
+    }
   }
 
   async route(id: string, dto: RouteCallDto) {

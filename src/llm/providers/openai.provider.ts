@@ -11,7 +11,7 @@ import {
 } from '../../common/crypto/credential-cipher';
 import { inquirySystemPrompt, readInquiryTurn } from '../inquiry-turn';
 import { readTopicChoice, topicRoutePrompt } from '../topic-route';
-import { ConnectionTestResult, LlmCompletionRequest, LlmProviderClient, LlmRouteRequest } from './llm-provider';
+import { ConnectionTestResult, LlmCallTrace, LlmCompletionError, LlmCompletionRequest, LlmProviderClient, LlmRouteRequest, LlmUsage } from './llm-provider';
 
 export const OPENAI_MODEL_IDS = ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1'] as const;
 
@@ -100,7 +100,18 @@ export class OpenAiProvider implements LlmProviderClient {
   }
 
   async complete(config: Record<string, unknown>, request: LlmCompletionRequest) {
+    const started = Date.now();
     const stored = this.readStored(config);
+    const systemPrompt = inquirySystemPrompt(request.note, request.topics, request.defaultTopicId);
+    const messages = request.messages.map((message) => ({
+      role: message.role,
+      content: message.interrupted
+        ? `${message.content}\n[interrupted: the caller spoke over this and may not have heard it fully]`
+        : message.content,
+    }));
+    const fail = (message: string, raw: unknown = null): never => {
+      throw new LlmCompletionError(message, this.trace(systemPrompt, messages, raw, null, started));
+    };
     const apiKey = decryptSecret(stored.apiKey, this.key());
     let response: Response;
     try {
@@ -114,15 +125,7 @@ export class OpenAiProvider implements LlmProviderClient {
           model: stored.modelId,
           temperature: 0.3,
           max_completion_tokens: 400,
-          messages: [
-            { role: 'system', content: inquirySystemPrompt(request.note, request.topics, request.defaultTopicId) },
-            ...request.messages.map((message) => ({
-              role: message.role,
-              content: message.interrupted
-                ? `${message.content}\n[interrupted: the caller spoke over this and may not have heard it fully]`
-                : message.content,
-            })),
-          ],
+          messages: [{ role: 'system', content: systemPrompt }, ...messages],
           response_format: {
             type: 'json_schema',
             json_schema: {
@@ -134,31 +137,38 @@ export class OpenAiProvider implements LlmProviderClient {
         }),
       });
     } catch {
-      throw new BadRequestException('Could not reach OpenAI.');
+      fail('Could not reach OpenAI.');
     }
 
-    if (!response.ok) {
-      throw new BadRequestException(await this.openAiMessage(response));
+    if (!response!.ok) {
+      fail(await this.openAiMessage(response!), await this.readBody(response!));
     }
 
-    const payload = (await response.json()) as {
+    const payload = (await response!.json()) as {
       choices?: Array<{ message?: { content?: unknown; refusal?: unknown } }>;
+      usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown };
     };
     const message = payload.choices?.[0]?.message;
     if (message && typeof message.refusal === 'string' && message.refusal.trim()) {
-      throw new BadRequestException('OpenAI refused this turn.');
+      fail('OpenAI refused this turn.', payload);
     }
     if (!message || typeof message.content !== 'string' || !message.content.trim()) {
-      throw new BadRequestException('OpenAI did not return a reply.');
+      fail('OpenAI did not return a reply.', payload);
     }
     let parsed: unknown;
     try {
-      parsed = JSON.parse(message.content);
+      parsed = JSON.parse(message!.content as string);
     } catch {
-      throw new BadRequestException('OpenAI returned an unreadable reply.');
+      fail('OpenAI returned an unreadable reply.', payload);
     }
     const allowed = request.defaultTopicId ? [...(request.topics ?? []).map((topic) => topic.id), request.defaultTopicId] : undefined;
-    return readInquiryTurn(parsed, allowed, request.defaultTopicId);
+    try {
+      const turn = readInquiryTurn(parsed, allowed, request.defaultTopicId);
+      return { turn, trace: this.trace(systemPrompt, messages, payload, this.readUsage(payload.usage), started) };
+    } catch (error) {
+      fail(error instanceof Error ? error.message : 'OpenAI returned an unreadable reply.', payload);
+    }
+    throw new LlmCompletionError('OpenAI returned an unreadable reply.', this.trace(systemPrompt, messages, payload, null, started));
   }
 
   async route(config: Record<string, unknown>, request: LlmRouteRequest) {
@@ -226,6 +236,38 @@ export class OpenAiProvider implements LlmProviderClient {
       return { topicId: readTopicChoice(JSON.parse(message.content), allowed, request.defaultTopicId) };
     } catch {
       return { topicId: request.defaultTopicId };
+    }
+  }
+
+  private trace(
+    systemPrompt: string,
+    messages: Array<{ role: string; content: string }>,
+    raw: unknown,
+    usage: LlmUsage | null,
+    started: number,
+  ): LlmCallTrace {
+    return { systemPrompt, messages, raw, usage, latencyMs: Date.now() - started };
+  }
+
+  private readUsage(usage: { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown } | undefined): LlmUsage | null {
+    if (!usage) return null;
+    const promptTokens = typeof usage.prompt_tokens === 'number' ? usage.prompt_tokens : null;
+    const completionTokens = typeof usage.completion_tokens === 'number' ? usage.completion_tokens : null;
+    const totalTokens = typeof usage.total_tokens === 'number' ? usage.total_tokens : null;
+    if (promptTokens == null && completionTokens == null && totalTokens == null) return null;
+    return {
+      promptTokens: promptTokens ?? 0,
+      completionTokens: completionTokens ?? 0,
+      totalTokens: totalTokens ?? 0,
+    };
+  }
+
+  private async readBody(response: Response) {
+    const raw = await response.clone().text();
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      return raw.slice(0, 2000);
     }
   }
 

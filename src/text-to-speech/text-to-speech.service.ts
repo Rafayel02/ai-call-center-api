@@ -1,6 +1,8 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, StreamableFile } from '@nestjs/common';
 import { Prisma, TtsProvider } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { ExecutionContext } from '../scenario-executions/execution-context';
+import { ScenarioExecutionsService } from '../scenario-executions/scenario-executions.service';
 import { CreateTextToSpeechModelDto, TestTextToSpeechDraftDto, UpdateTextToSpeechModelDto } from './dto/text-to-speech-model.dto';
 import { TtsProviderRegistry } from './providers/provider.registry';
 import { TextToSpeechProvider } from './providers/text-to-speech-provider';
@@ -13,6 +15,7 @@ export class TextToSpeechService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly providers: TtsProviderRegistry,
+    private readonly executions: ScenarioExecutionsService,
   ) {}
 
   providersAvailable() {
@@ -95,7 +98,7 @@ export class TextToSpeechService {
     return { voices };
   }
 
-  async speak(id: string, text: string) {
+  async speak(id: string, text: string, execution: ExecutionContext | null = null) {
     const spoken = text.trim();
     if (!spoken) throw new BadRequestException('Enter the text to speak.');
     if (spoken.length > 5000) throw new BadRequestException('Text can be at most 5000 characters.');
@@ -106,23 +109,61 @@ export class TextToSpeechService {
     const identity = provider.toPublic(config);
     const providerModelId = typeof identity.modelId === 'string' ? identity.modelId : '';
     const voiceId = typeof identity.voiceId === 'string' ? identity.voiceId : '';
+    const voiceName = typeof identity.voiceName === 'string' ? identity.voiceName : '';
     if (!providerModelId || !voiceId) throw new BadRequestException('Stored speech model is incomplete.');
-    const cacheKey = speechClipKey({ modelId: model.id, providerModelId, voiceId, text: spoken });
+    const snapshot = {
+      modelId: model.id,
+      modelName: model.name,
+      provider: model.provider,
+      providerModel: providerModelId,
+      voiceId,
+      voiceName,
+    };
+    const started = Date.now();
+    try {
+      const clip = await this.loadOrCreateClip(model.id, provider, config, providerModelId, voiceId, spoken);
+      await this.executions.recordSpeech(execution, {
+        model: snapshot,
+        text: spoken,
+        latencyMs: Date.now() - started,
+        audio: clip.audio,
+        mimeType: clip.mimeType,
+      });
+      return this.audioFile(clip.audio, clip.mimeType);
+    } catch (error) {
+      await this.executions.recordSpeech(execution, {
+        model: snapshot,
+        text: spoken,
+        latencyMs: Date.now() - started,
+        error: error instanceof Error ? error.message : 'Speech failed.',
+      });
+      throw error;
+    }
+  }
 
+  private async loadOrCreateClip(
+    modelId: string,
+    provider: TextToSpeechProvider,
+    config: Record<string, unknown>,
+    providerModelId: string,
+    voiceId: string,
+    spoken: string,
+  ) {
+    const cacheKey = speechClipKey({ modelId, providerModelId, voiceId, text: spoken });
     const cached = await this.prisma.textToSpeechClip.findUnique({
       where: { cacheKey },
       select: { audio: true, mimeType: true },
     });
     if (cached) {
-      this.logger.log(`Reused speech clip for model ${model.id}`);
-      return this.audioFile(Buffer.from(cached.audio), cached.mimeType);
+      this.logger.log(`Reused speech clip for model ${modelId}`);
+      return { audio: Buffer.from(cached.audio), mimeType: cached.mimeType };
     }
 
     const generated = await provider.speak(config, spoken);
     try {
       await this.prisma.textToSpeechClip.create({
         data: {
-          modelId: model.id,
+          modelId,
           cacheKey,
           providerModelId,
           voiceId,
@@ -132,16 +173,16 @@ export class TextToSpeechService {
           byteSize: generated.length,
         },
       });
-      this.logger.log(`Stored speech clip for model ${model.id}`);
+      this.logger.log(`Stored speech clip for model ${modelId}`);
     } catch (error) {
       if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') throw error;
       const winner = await this.prisma.textToSpeechClip.findUnique({
         where: { cacheKey },
         select: { audio: true, mimeType: true },
       });
-      if (winner) return this.audioFile(Buffer.from(winner.audio), winner.mimeType);
+      if (winner) return { audio: Buffer.from(winner.audio), mimeType: winner.mimeType };
     }
-    return this.audioFile(generated, 'audio/mpeg');
+    return { audio: generated, mimeType: 'audio/mpeg' };
   }
 
   private audioFile(audio: Buffer, mimeType: string) {

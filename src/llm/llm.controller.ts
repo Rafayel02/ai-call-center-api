@@ -1,7 +1,9 @@
-import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, ParseUUIDPipe, Patch, Post, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
+import { IncomingHttpHeaders } from 'http';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AuthUser, CurrentUser } from '../common/decorators/current-user.decorator';
+import { readExecutionContext } from '../scenario-executions/execution-context';
 import { CompleteTurnDto, CreateLlmModelDto, RouteCallDto, TestLlmDraftDto, UpdateLlmModelDto } from './dto/llm-model.dto';
 import { LlmService } from './llm.service';
 
@@ -52,8 +54,8 @@ export class LlmController {
 
   @Post(':id/complete')
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
-  complete(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CompleteTurnDto) {
-    return this.models.complete(id, dto);
+  complete(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CompleteTurnDto, @Headers() headers: IncomingHttpHeaders) {
+    return this.models.complete(id, dto, readExecutionContext(headers));
   }
 
   @Post(':id/route')

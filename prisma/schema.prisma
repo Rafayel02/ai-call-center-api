@@ -29,6 +29,20 @@ enum SttCheckStatus {
   FAILED
 }
 
+enum ExecutionStatus {
+  RUNNING
+  FINISHED
+  STOPPED
+  FAILED
+}
+
+enum ExecutionAudioKind {
+  CALLER
+  MIX
+  UTTERANCE
+  TTS
+}
+
 model User {
   id           String   @id @default(uuid()) @db.Uuid
   email        String   @unique
@@ -42,6 +56,7 @@ model User {
   datasetSamples DatasetSample[]
   organizations  Organization[]
   scenarios      Scenario[]
+  scenarioExecutions ScenarioExecution[]
 
   @@map("users")
 }
@@ -74,10 +89,70 @@ model Scenario {
   updatedAt      DateTime     @updatedAt @map("updated_at")
   createdById    String       @map("created_by") @db.Uuid
   createdBy      User         @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  executions     ScenarioExecution[]
 
   @@index([organizationId])
   @@index([createdById])
   @@map("scenarios")
+}
+
+model ScenarioExecution {
+  id             String          @id @db.Uuid
+  scenarioId     String          @map("scenario_id") @db.Uuid
+  scenario       Scenario        @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+  startedById    String          @map("started_by") @db.Uuid
+  startedBy      User            @relation(fields: [startedById], references: [id], onDelete: Restrict)
+  status         ExecutionStatus @default(RUNNING)
+  startedAt      DateTime        @default(now()) @map("started_at")
+  endedAt        DateTime?       @map("ended_at")
+  lastActivityAt DateTime        @default(now()) @map("last_activity_at")
+  durationMs     Int?            @map("duration_ms")
+  inquiry        String?
+  topicId        String?         @map("topic_id")
+  topicLabel     String?         @map("topic_label")
+  errorMessage   String?         @map("error_message")
+  graph          Json
+  peaks          Json?
+  callerMime     String?         @map("caller_mime")
+  mixMime        String?         @map("mix_mime")
+  audio          ScenarioExecutionAudio[]
+  events         ScenarioExecutionEvent[]
+
+  @@index([scenarioId, startedAt])
+  @@index([startedById])
+  @@map("scenario_executions")
+}
+
+model ScenarioExecutionAudio {
+  id          String                 @id @default(uuid()) @db.Uuid
+  executionId String                 @map("execution_id") @db.Uuid
+  execution   ScenarioExecution      @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  kind        ExecutionAudioKind
+  mimeType    String                 @map("mime_type")
+  audio       Bytes
+  byteSize    Int                    @map("byte_size")
+  events      ScenarioExecutionEvent[]
+
+  @@index([executionId])
+  @@map("scenario_execution_audio")
+}
+
+model ScenarioExecutionEvent {
+  id          String                  @id @default(uuid()) @db.Uuid
+  executionId String                  @map("execution_id") @db.Uuid
+  execution   ScenarioExecution       @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  clientSeq   Int                     @map("client_seq")
+  offsetMs    Int                     @map("offset_ms")
+  type        String
+  nodeId      String?                 @map("node_id")
+  payload     Json
+  audioId     String?                 @map("audio_id") @db.Uuid
+  audio       ScenarioExecutionAudio? @relation(fields: [audioId], references: [id], onDelete: SetNull)
+  createdAt   DateTime                @default(now()) @map("created_at")
+
+  @@unique([executionId, clientSeq])
+  @@index([executionId, offsetMs, clientSeq])
+  @@map("scenario_execution_events")
 }
 
 model SpeechToTextModel {

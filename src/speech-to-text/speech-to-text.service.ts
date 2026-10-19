@@ -1,6 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, SttProvider } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { ExecutionContext } from '../scenario-executions/execution-context';
+import { ScenarioExecutionsService } from '../scenario-executions/scenario-executions.service';
 import { CreateSpeechModelDto, TestDraftDto, UpdateSpeechModelDto } from './dto/speech-model.dto';
 import { ProviderRegistry } from './providers/provider.registry';
 import { SpeechToTextProvider } from './providers/speech-to-text-provider';
@@ -12,6 +14,7 @@ export class SpeechToTextService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly providers: ProviderRegistry,
+    private readonly executions: ScenarioExecutionsService,
   ) {}
 
   providersAvailable() {
@@ -76,7 +79,11 @@ export class SpeechToTextService {
     return this.runTest(provider, model.config as Record<string, unknown>);
   }
 
-  async transcribe(id: string, file?: { buffer?: Buffer; size?: number; mimetype?: string; originalname?: string }) {
+  async transcribe(
+    id: string,
+    file?: { buffer?: Buffer; size?: number; mimetype?: string; originalname?: string },
+    execution: ExecutionContext | null = null,
+  ) {
     if (!file?.buffer?.length) throw new BadRequestException('Choose an audio file.');
     if ((file.size ?? file.buffer.length) > MAX_AUDIO_BYTES) {
       throw new BadRequestException('Audio file must be 25 MB or smaller.');
@@ -88,11 +95,41 @@ export class SpeechToTextService {
     const model = await this.findOrThrow(id);
     if (!model.enabled) throw new BadRequestException('This model is disabled.');
     const filename = (file.originalname || 'audio').replace(/[^\w.\-]+/g, '_').slice(0, 120);
-    return this.providers.get(model.provider).transcribe(model.config as Record<string, unknown>, {
-      buffer: file.buffer,
-      filename,
-      mimeType,
-    });
+    const started = Date.now();
+    const snapshot = {
+      modelId: model.id,
+      modelName: model.name,
+      provider: model.provider,
+      providerModel: this.providers.get(model.provider).toPublic(model.config as Record<string, unknown>).modelId,
+    };
+    try {
+      const result = await this.providers.get(model.provider).transcribe(model.config as Record<string, unknown>, {
+        buffer: file.buffer,
+        filename,
+        mimeType,
+      });
+      await this.executions.recordTranscription(execution, {
+        model: snapshot,
+        transcript: result.text,
+        languageCode: result.languageCode,
+        latencyMs: Date.now() - started,
+        audio: file.buffer,
+        mimeType,
+        error: result.text.trim() ? null : 'The transcript was empty.',
+      });
+      return result;
+    } catch (error) {
+      await this.executions.recordTranscription(execution, {
+        model: snapshot,
+        transcript: '',
+        languageCode: null,
+        latencyMs: Date.now() - started,
+        audio: file.buffer,
+        mimeType,
+        error: error instanceof Error ? error.message : 'Speech to text failed.',
+      });
+      throw error;
+    }
   }
 
   async testDraft(dto: TestDraftDto) {
