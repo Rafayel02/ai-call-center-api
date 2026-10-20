@@ -144,6 +144,7 @@ model Scenario {
   graph          Json
   languages      String[]     @default([])
   languageModels Json         @default("{}") @map("language_models")
+  askLanguage    Boolean      @default(false) @map("ask_language")
   active         Boolean      @default(false)
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @updatedAt @map("updated_at")

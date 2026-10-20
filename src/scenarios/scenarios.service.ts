@@ -13,6 +13,7 @@ const scenarioSummary = {
   description: true,
   icon: true,
   languages: true,
+  askLanguage: true,
   active: true,
   createdAt: true,
   updatedAt: true,
@@ -189,6 +190,7 @@ export class ScenariosService implements OnModuleInit {
         data: {
           graph: graph as unknown as Prisma.InputJsonValue,
           ...(languageModels ? { languageModels: languageModels as unknown as Prisma.InputJsonValue } : {}),
+          ...(dto.askLanguage === undefined ? {} : { askLanguage: dto.askLanguage }),
         },
         select: { ...scenarioSummary, graph: true, languageModels: true, phoneNumber: { select: { id: true, e164: true } } },
       });

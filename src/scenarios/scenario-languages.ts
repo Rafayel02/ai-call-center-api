@@ -179,6 +179,11 @@ export interface LanguageVoice {
 
 export type ScenarioLanguageModels = Partial<Record<ScenarioLanguage, LanguageVoice>>;
 
+export function languageKeyPrompt(languages: ScenarioLanguage[]) {
+  const choices = languages.map((code, index) => `for ${LANGUAGE_NAME[code]} press ${index + 1}`);
+  return `Hey, ${choices.join(', ')}.`;
+}
+
 export function emptyVoice(): LanguageVoice {
   return { sttModelId: null, ttsModelId: null, llmModelId: null };
 }

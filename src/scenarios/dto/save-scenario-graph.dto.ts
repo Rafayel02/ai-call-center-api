@@ -1,4 +1,4 @@
-import { IsArray, IsObject, IsOptional } from 'class-validator';
+import { IsArray, IsBoolean, IsObject, IsOptional } from 'class-validator';
 
 export class SaveScenarioGraphDto {
   @IsArray()
@@ -10,4 +10,8 @@ export class SaveScenarioGraphDto {
   @IsOptional()
   @IsObject()
   languageModels?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsBoolean()
+  askLanguage?: boolean;
 }

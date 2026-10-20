@@ -25,6 +25,7 @@ interface PendingCall {
   graph: ScenarioGraph;
   languages: ScenarioLanguage[];
   languageModels: ScenarioLanguageModels;
+  askLanguage: boolean;
   scenarioId: string;
   startedById: string;
   expires: number;
@@ -66,6 +67,7 @@ export class TelephonyService {
       graph: scenario.graph,
       languages: scenario.languages,
       languageModels: scenario.languageModels,
+      askLanguage: scenario.askLanguage,
       scenarioId: scenario.id,
       startedById: scenario.startedById,
       expires: Date.now() + 60_000,
@@ -139,7 +141,7 @@ export class TelephonyService {
           return;
         }
         this.pending.delete(callId);
-        const session = new PhoneScenarioSession(socket, pending.graph, this.deps(), silentLog, pending.languages, pending.languageModels);
+        const session = new PhoneScenarioSession(socket, pending.graph, this.deps(), silentLog, pending.languages, pending.languageModels, pending.askLanguage);
         session.receive(String(data));
         resolve({ session, pending });
       };
@@ -182,7 +184,7 @@ export class TelephonyService {
   private async publishedScenario(to: string) {
     const number = await this.prisma.phoneNumber.findUnique({
       where: { e164: to },
-      select: { scenario: { select: { id: true, active: true, graph: true, languages: true, languageModels: true, createdById: true } } },
+      select: { scenario: { select: { id: true, active: true, graph: true, languages: true, languageModels: true, askLanguage: true, createdById: true } } },
     });
     if (!number?.scenario?.active) return null;
     const languages = number.scenario.languages.filter(isScenarioLanguage);
@@ -191,6 +193,7 @@ export class TelephonyService {
       startedById: number.scenario.createdById,
       languages,
       languageModels: languageModelsFor(languages, number.scenario.languageModels, false),
+      askLanguage: number.scenario.askLanguage,
       graph: readScenarioGraph(number.scenario.graph),
     };
   }

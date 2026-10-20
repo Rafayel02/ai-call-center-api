@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 import { ExecutionContext, SpokenKind } from '../scenario-executions/execution-context';
 import { ScenarioGraph, ScenarioGraphNode } from '../scenarios/scenario-graph';
-import { LANGUAGE_NAME, LanguageVoice, ScenarioLanguage, ScenarioLanguageModels, SPOKEN_NAME, delayLines, emptyVoice, matchSpokenLanguage, spokenLine } from '../scenarios/scenario-languages';
+import { LANGUAGE_NAME, LanguageVoice, ScenarioLanguage, ScenarioLanguageModels, delayLines, emptyVoice, languageKeyPrompt, spokenLine } from '../scenarios/scenario-languages';
 import { CallLog } from './call-log';
 import { decodeUlaw, pcmWav, rms } from './ulaw';
 
@@ -33,6 +33,7 @@ interface Inbound {
   media?: { payload?: string };
   mark?: { name?: string };
   start?: { streamSid?: string; customParameters?: Record<string, string> };
+  dtmf?: { digit?: string };
 }
 
 /** One phone call. Twilio sends μ-law, and the session walks the scenario. */
@@ -52,6 +53,8 @@ export class PhoneScenarioSession {
   private utteranceStartMs = 0;
   private utteranceDurationMs = 0;
   private language: ScenarioLanguage;
+  private pendingDigit: string | null = null;
+  private digitWait: ((digit: string | null) => void) | null = null;
 
   constructor(
     private readonly socket: WebSocket,
@@ -60,6 +63,7 @@ export class PhoneScenarioSession {
     private log: CallLog,
     private readonly languages: ScenarioLanguage[] = ['en'],
     private readonly languageModels: ScenarioLanguageModels = {},
+    private readonly askLanguage = false,
   ) {
     this.language = languages[0] ?? 'en';
   }
@@ -89,11 +93,16 @@ export class PhoneScenarioSession {
       if (!this.playing) this.samples.push(decoded);
     }
     if (message.event === 'mark' && message.mark?.name) this.markWait?.(message.mark.name);
-    if (message.event === 'stop') this.closed = true;
+    if (message.event === 'dtmf' && message.dtmf?.digit) this.takeDigit(message.dtmf.digit);
+    if (message.event === 'stop') {
+      this.closed = true;
+      this.digitWait?.(null);
+    }
   }
 
   hangUp() {
     this.closed = true;
+    this.digitWait?.(null);
   }
 
   async run() {
@@ -137,26 +146,48 @@ export class PhoneScenarioSession {
     return this.languageModels[this.language] ?? emptyVoice();
   }
 
-  private async chooseLanguage() {
-    if (this.languages.length < 2 || this.closed) return;
-    for (const code of this.languages) {
-      const modelId = this.languageModels[code]?.ttsModelId;
-      if (modelId) await this.speak(modelId, SPOKEN_NAME[code], 'language', 'step');
+  private takeDigit(digit: string) {
+    if (this.digitWait) this.digitWait(digit);
+    else this.pendingDigit = digit;
+  }
+
+  private waitForDigit(ms: number) {
+    if (this.pendingDigit) {
+      const digit = this.pendingDigit;
+      this.pendingDigit = null;
+      return Promise.resolve(digit);
     }
-    const heard = await this.listen(4);
-    if (!heard || this.closed) return;
-    const wav = pcmWav(heard);
-    const transcripts = await Promise.all(
-      this.languages.map(async (code) => {
-        const modelId = this.languageModels[code]?.sttModelId;
-        if (!modelId) return '';
-        return this.deps.transcribe(modelId, wav, this.log.context('language', null));
-      }),
-    );
-    const named = this.languages.find((code, index) => matchSpokenLanguage(transcripts[index] ?? '', [code]));
-    const any = this.languages.map((_, index) => matchSpokenLanguage(transcripts[index] ?? '', this.languages)).find((code) => code);
-    const matched = named ?? any;
-    if (matched) this.language = matched;
+    return new Promise<string | null>((resolve) => {
+      const timer = setTimeout(() => {
+        this.digitWait = null;
+        resolve(null);
+      }, ms);
+      this.digitWait = (digit) => {
+        clearTimeout(timer);
+        this.digitWait = null;
+        resolve(digit);
+      };
+    });
+  }
+
+  private async chooseLanguage() {
+    if (!this.askLanguage || this.languages.length === 0 || this.closed) return;
+    const modelId = this.languageModels[this.languages[0]]?.ttsModelId ?? null;
+    if (!modelId) {
+      this.closed = true;
+      return;
+    }
+    this.pendingDigit = null;
+    await this.speak(modelId, languageKeyPrompt(this.languages), 'language', 'step');
+    const pressed = this.pendingDigit;
+    this.pendingDigit = null;
+    const digit = pressed ?? (await this.waitForDigit(12_000));
+    const chosen = digit ? this.languages[Number(digit) - 1] : undefined;
+    if (!chosen) {
+      this.closed = true;
+      return;
+    }
+    this.language = chosen;
   }
 
   private heardContext(nodeId: string) {
