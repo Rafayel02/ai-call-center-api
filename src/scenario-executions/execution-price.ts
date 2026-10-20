@@ -169,14 +169,21 @@ function chargeLlm(payload: Record<string, unknown>, catalog: PriceCatalog): Cha
   return priced('model', usd);
 }
 
+export function speechGenerationUsd(provider: string, providerModel: string, spoken: string, catalog: PriceCatalog): number | null {
+  if (provider !== 'ELEVENLABS' || !catalog.elevenlabs) return null;
+  const rate = catalog.elevenlabs[providerModel];
+  if (!rate || rate.unit !== '1k_characters') return null;
+  return rate.usd * (spoken.length / 1000);
+}
+
 function chargeSpeech(payload: Record<string, unknown>, catalog: PriceCatalog): Charge {
   if (payload.cached === true) return priced('textToSpeech', 0);
   if (payload.provider !== 'ELEVENLABS') return missed(true);
   if (!catalog.elevenlabs) return missed(false);
-  const rate = catalog.elevenlabs[text(payload.providerModel)];
   const spoken = typeof payload.text === 'string' ? payload.text : null;
-  if (!rate || rate.unit !== '1k_characters' || spoken == null) return missed(true);
-  return priced('textToSpeech', rate.usd * (spoken.length / 1000));
+  const usd = spoken == null ? null : speechGenerationUsd('ELEVENLABS', text(payload.providerModel), spoken, catalog);
+  if (usd == null) return missed(true);
+  return priced('textToSpeech', usd);
 }
 
 function chargeTranscription(payload: Record<string, unknown>, catalog: PriceCatalog): Charge {

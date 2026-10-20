@@ -220,6 +220,7 @@ model TextToSpeechClip {
   audio           Bytes
   mimeType        String            @map("mime_type")
   byteSize        Int               @map("byte_size")
+  priceUsd        Decimal?          @map("price_usd") @db.Decimal(12, 6)
   createdAt       DateTime          @default(now()) @map("created_at")
 
   @@index([modelId])

@@ -32,6 +32,11 @@ export class TextToSpeechController {
     return this.models.list();
   }
 
+  @Get('clips')
+  clips() {
+    return this.models.listClips();
+  }
+
   @Get(':id')
   get(@Param('id', ParseUUIDPipe) id: string) {
     return this.models.get(id);

@@ -3,9 +3,10 @@ import { ExecutionAudioKind, ExecutionStatus, Prisma } from '@prisma/client';
 import { inquirySystemPrompt, PromptTopic } from '../llm/inquiry-turn';
 import { ModelPricingService } from '../model-pricing/model-pricing.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { reusedSpeechPayload, speechClipKey } from '../text-to-speech/speech-clip';
 import { CreateScenarioExecutionDto, ExecutionEventDto, FinishScenarioExecutionDto } from './dto/scenario-execution.dto';
 import { ExecutionContext } from './execution-context';
-import { highlightPrices, priceExecution, readPriceParts } from './execution-price';
+import { highlightPrices, priceExecution, readPriceParts, speechGenerationUsd } from './execution-price';
 import { speechSegments } from './speech-segments';
 
 export const MAX_EXECUTION_AUDIO_BYTES = 30 * 1024 * 1024;
@@ -158,6 +159,7 @@ export class ScenarioExecutionsService implements OnModuleInit {
 
   async onModuleInit() {
     try {
+      await this.settleReusedSpeech();
       await this.priceStored();
     } catch (error) {
       this.logger.warn(`Could not price existing executions: ${error instanceof Error ? error.message : 'unknown error'}`);
@@ -634,6 +636,105 @@ export class ScenarioExecutionsService implements OnModuleInit {
       ),
     );
     if (stale.length > 0) await this.priceStored(stale.map((row) => row.id));
+  }
+
+  private async settleReusedSpeech() {
+    const clips = await this.prisma.textToSpeechClip.findMany({
+      select: {
+        id: true,
+        cacheKey: true,
+        createdAt: true,
+        text: true,
+        providerModelId: true,
+        priceUsd: true,
+        model: { select: { provider: true } },
+      },
+    });
+    const clipByKey = new Map(clips.map((clip) => [clip.cacheKey, clip]));
+    const ready = await this.prisma.scenarioExecutionEvent.findMany({
+      where: { type: 'tts.ready' },
+      select: { id: true, executionId: true, createdAt: true, payload: true },
+    });
+    const patches = new Map<string, { executionId: string; payload: Prisma.InputJsonValue }>();
+    for (const event of ready) {
+      const payload = asRecord(event.payload);
+      const modelId = typeof payload.modelId === 'string' ? payload.modelId : '';
+      const providerModelId = typeof payload.providerModel === 'string' ? payload.providerModel : '';
+      const voiceId = typeof payload.voiceId === 'string' ? payload.voiceId : '';
+      const spoken = typeof payload.text === 'string' ? payload.text : '';
+      if (!modelId || !providerModelId || !voiceId || !spoken) continue;
+      const clip = clipByKey.get(speechClipKey({ modelId, providerModelId, voiceId, text: spoken }));
+      const next = reusedSpeechPayload(payload, event.createdAt, clip?.createdAt);
+      if (!next) continue;
+      patches.set(event.id, { executionId: event.executionId, payload: next as Prisma.InputJsonValue });
+    }
+    const unpriced = clips.filter((clip) => clip.priceUsd == null);
+    if (patches.size === 0 && unpriced.length === 0) return;
+
+    const catalog = await this.pricing.rates();
+    let pricedClips = 0;
+    for (const clip of unpriced) {
+      const usd = speechGenerationUsd(clip.model.provider, clip.providerModelId, clip.text, catalog);
+      if (usd == null) continue;
+      const updated = await this.prisma.textToSpeechClip.updateMany({
+        where: { id: clip.id, priceUsd: null },
+        data: { priceUsd: usd.toFixed(6) },
+      });
+      pricedClips += updated.count;
+    }
+    if (pricedClips > 0) this.logger.log(`Stored the first cost of ${pricedClips} cached speech line${pricedClips === 1 ? '' : 's'}.`);
+    if (patches.size === 0) return;
+
+    const executionIds = [...new Set([...patches.values()].map((patch) => patch.executionId))];
+    const rows = await this.prisma.scenarioExecution.findMany({
+      where: { id: { in: executionIds }, status: { not: ExecutionStatus.RUNNING } },
+      select: { id: true, events: { select: { id: true, type: true, payload: true } } },
+    });
+    const finished = new Set(rows.map((row) => row.id));
+    let stored = 0;
+    let freed = 0;
+    for (const row of rows) {
+      const changed = row.events.filter((event) => patches.has(event.id));
+      if (changed.length === 0) continue;
+      const quote = priceExecution(
+        row.events.map((event) => {
+          const patch = patches.get(event.id);
+          return patch ? { id: event.id, type: event.type, payload: patch.payload } : event;
+        }),
+        catalog,
+      );
+      if (!quote.persist) continue;
+      await this.prisma.$transaction([
+        ...changed.map((event) =>
+          this.prisma.scenarioExecutionEvent.update({
+            where: { id: event.id },
+            data: { payload: patches.get(event.id)?.payload },
+          }),
+        ),
+        this.prisma.scenarioExecution.updateMany({
+          where: { id: row.id, status: { not: ExecutionStatus.RUNNING } },
+          data: {
+            priceUsd: quote.usd.toFixed(6),
+            priceComplete: quote.complete,
+            priceParts: quote.parts as unknown as Prisma.InputJsonValue,
+          },
+        }),
+      ]);
+      stored += 1;
+      freed += changed.length;
+    }
+    const running = [...patches.entries()].filter(([, patch]) => !finished.has(patch.executionId));
+    if (running.length > 0) {
+      await this.prisma.$transaction(
+        running.map(([id, patch]) =>
+          this.prisma.scenarioExecutionEvent.update({
+            where: { id },
+            data: { payload: patch.payload },
+          }),
+        ),
+      );
+    }
+    if (freed > 0) this.logger.log(`Counted ${freed} reused speech line${freed === 1 ? '' : 's'} as free across ${stored} execution${stored === 1 ? '' : 's'}.`);
   }
 
   private async priceStored(ids?: string[]) {

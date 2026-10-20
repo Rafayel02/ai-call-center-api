@@ -1,7 +1,9 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, StreamableFile } from '@nestjs/common';
 import { Prisma, TtsProvider } from '@prisma/client';
+import { ModelPricingService } from '../model-pricing/model-pricing.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExecutionContext } from '../scenario-executions/execution-context';
+import { speechGenerationUsd } from '../scenario-executions/execution-price';
 import { ScenarioExecutionsService } from '../scenario-executions/scenario-executions.service';
 import { CreateTextToSpeechModelDto, TestTextToSpeechDraftDto, UpdateTextToSpeechModelDto } from './dto/text-to-speech-model.dto';
 import { TtsProviderRegistry } from './providers/provider.registry';
@@ -16,6 +18,7 @@ export class TextToSpeechService {
     private readonly prisma: PrismaService,
     private readonly providers: TtsProviderRegistry,
     private readonly executions: ScenarioExecutionsService,
+    private readonly pricing: ModelPricingService,
   ) {}
 
   providersAvailable() {
@@ -98,6 +101,32 @@ export class TextToSpeechService {
     return { voices };
   }
 
+  async listClips() {
+    const clips = await this.prisma.textToSpeechClip.findMany({
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        text: true,
+        providerModelId: true,
+        voiceId: true,
+        priceUsd: true,
+        createdAt: true,
+        model: { select: { name: true, provider: true, config: true } },
+      },
+    });
+    return clips.map((clip) => ({
+      id: clip.id,
+      text: clip.text,
+      characters: clip.text.length,
+      modelName: clip.model.name,
+      provider: clip.model.provider,
+      providerModel: clip.providerModelId,
+      voiceName: voiceLabel(clip.model.config, clip.voiceId),
+      priceUsd: clip.priceUsd == null ? null : Number(clip.priceUsd.toString()),
+      createdAt: clip.createdAt,
+    }));
+  }
+
   async speak(id: string, text: string, execution: ExecutionContext | null = null) {
     const spoken = text.trim();
     if (!spoken) throw new BadRequestException('Enter the text to speak.');
@@ -162,7 +191,7 @@ export class TextToSpeechService {
 
     const generated = await provider.speak(config, spoken);
     try {
-      await this.prisma.textToSpeechClip.create({
+      const clip = await this.prisma.textToSpeechClip.create({
         data: {
           modelId,
           cacheKey,
@@ -173,8 +202,10 @@ export class TextToSpeechService {
           mimeType: 'audio/mpeg',
           byteSize: generated.length,
         },
+        select: { id: true },
       });
       this.logger.log(`Stored speech clip for model ${modelId}`);
+      void this.rememberClipPrice(clip.id, providerModelId, spoken);
     } catch (error) {
       if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') throw error;
       const winner = await this.prisma.textToSpeechClip.findUnique({
@@ -184,6 +215,19 @@ export class TextToSpeechService {
       if (winner) return { audio: Buffer.from(winner.audio), mimeType: winner.mimeType, cached: false };
     }
     return { audio: generated, mimeType: 'audio/mpeg', cached: false };
+  }
+
+  private async rememberClipPrice(id: string, providerModelId: string, spoken: string) {
+    try {
+      const usd = speechGenerationUsd('ELEVENLABS', providerModelId, spoken, await this.pricing.rates());
+      if (usd == null) return;
+      await this.prisma.textToSpeechClip.updateMany({
+        where: { id, priceUsd: null },
+        data: { priceUsd: usd.toFixed(6) },
+      });
+    } catch (error) {
+      this.logger.warn(`Could not store the first cost of speech clip ${id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+    }
   }
 
   private audioFile(audio: Buffer, mimeType: string) {
@@ -231,4 +275,10 @@ export class TextToSpeechService {
       createdBy: model.createdBy,
     };
   }
+}
+
+function voiceLabel(config: Prisma.JsonValue, voiceId: string) {
+  const record = config && typeof config === 'object' && !Array.isArray(config) ? (config as Record<string, unknown>) : {};
+  if (record.voiceId === voiceId && typeof record.voiceName === 'string' && record.voiceName.trim()) return record.voiceName;
+  return voiceId;
 }
