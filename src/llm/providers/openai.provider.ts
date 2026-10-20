@@ -103,7 +103,7 @@ export class OpenAiProvider implements LlmProviderClient {
   async complete(config: Record<string, unknown>, request: LlmCompletionRequest) {
     const started = Date.now();
     const stored = this.readStored(config);
-    const systemPrompt = inquirySystemPrompt(request.note, request.topics, request.defaultTopicId, request.closingReturn === true);
+    const systemPrompt = inquirySystemPrompt(request.note, request.topics, request.defaultTopicId, request.closingReturn === true, request.language);
     const messages = request.messages.map((message) => ({
       role: message.role,
       content: message.interrupted
@@ -170,6 +170,35 @@ export class OpenAiProvider implements LlmProviderClient {
       fail(error instanceof Error ? error.message : 'OpenAI returned an unreadable reply.', payload);
     }
     throw new LlmCompletionError('OpenAI returned an unreadable reply.', this.trace(systemPrompt, messages, payload, null, started));
+  }
+
+  async text(config: Record<string, unknown>, system: string, user: string) {
+    const stored = this.readStored(config);
+    const apiKey = decryptSecret(stored.apiKey, this.key());
+    let response: Response;
+    try {
+      response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: stored.modelId,
+          temperature: 0,
+          max_completion_tokens: 8000,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user },
+          ],
+          response_format: { type: 'json_object' },
+        }),
+      });
+    } catch {
+      throw new BadRequestException('Could not reach OpenAI.');
+    }
+    if (!response.ok) throw new BadRequestException(await this.openAiMessage(response));
+    const payload = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }> };
+    const content = payload.choices?.[0]?.message?.content;
+    if (typeof content !== 'string' || !content.trim()) throw new BadRequestException('OpenAI did not return a reply.');
+    return content;
   }
 
   async route(config: Record<string, unknown>, request: LlmRouteRequest) {

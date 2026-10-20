@@ -101,4 +101,9 @@ export class CompleteTurnDto {
   @IsOptional()
   @IsBoolean()
   closingReturn?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  language?: string;
 }

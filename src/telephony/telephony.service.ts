@@ -15,6 +15,7 @@ import { PhoneCallLog, silentLog } from './call-log';
 import { mintCallToken, readCallToken } from './call-token';
 import { CallDeps, PhoneScenarioSession } from './call-session';
 import { isTwilioSignature } from './twilio-signature';
+import { ScenarioLanguage, isScenarioLanguage } from '../scenarios/scenario-languages';
 import { sayTwiml, streamTwiml } from './twiml';
 
 const MISSING = 'Add a Twilio phone streaming service before taking phone calls.';
@@ -22,6 +23,7 @@ const NOT_READY = 'This number is not ready to take calls.';
 
 interface PendingCall {
   graph: ScenarioGraph;
+  languages: ScenarioLanguage[];
   scenarioId: string;
   startedById: string;
   expires: number;
@@ -61,6 +63,7 @@ export class TelephonyService {
     const token = mintCallToken(this.secret(), callId);
     this.pending.set(callId, {
       graph: scenario.graph,
+      languages: scenario.languages,
       scenarioId: scenario.id,
       startedById: scenario.startedById,
       expires: Date.now() + 60_000,
@@ -134,7 +137,7 @@ export class TelephonyService {
           return;
         }
         this.pending.delete(callId);
-        const session = new PhoneScenarioSession(socket, pending.graph, this.deps(), silentLog);
+        const session = new PhoneScenarioSession(socket, pending.graph, this.deps(), silentLog, pending.languages);
         session.receive(String(data));
         resolve({ session, pending });
       };
@@ -177,10 +180,15 @@ export class TelephonyService {
   private async publishedScenario(to: string) {
     const number = await this.prisma.phoneNumber.findUnique({
       where: { e164: to },
-      select: { scenario: { select: { id: true, active: true, graph: true, createdById: true } } },
+      select: { scenario: { select: { id: true, active: true, graph: true, languages: true, createdById: true } } },
     });
     if (!number?.scenario?.active) return null;
-    return { id: number.scenario.id, startedById: number.scenario.createdById, graph: readScenarioGraph(number.scenario.graph) };
+    return {
+      id: number.scenario.id,
+      startedById: number.scenario.createdById,
+      languages: number.scenario.languages.filter(isScenarioLanguage),
+      graph: readScenarioGraph(number.scenario.graph),
+    };
   }
 
   private secret() {

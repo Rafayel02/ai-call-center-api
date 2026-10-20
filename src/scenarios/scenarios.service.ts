@@ -1,15 +1,18 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { LlmService } from '../llm/llm.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateScenarioDto } from './dto/create-scenario.dto';
 import { SaveScenarioGraphDto } from './dto/save-scenario-graph.dto';
 import { emptyScenarioGraph, parseScenarioGraph, readScenarioGraph } from './scenario-graph';
+import { LANGUAGE_NAME, ScenarioLanguage, applyTranslations, detectScript, isScenarioLanguage, spokenSample, spokenSlots, stampLanguage } from './scenario-languages';
 
 const scenarioSummary = {
   id: true,
   name: true,
   description: true,
   icon: true,
+  languages: true,
   active: true,
   createdAt: true,
   updatedAt: true,
@@ -17,8 +20,32 @@ const scenarioSummary = {
 } satisfies Prisma.ScenarioSelect;
 
 @Injectable()
-export class ScenariosService {
-  constructor(private readonly prisma: PrismaService) {}
+export class ScenariosService implements OnModuleInit {
+  private readonly logger = new Logger(ScenariosService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly llm: LlmService,
+  ) {}
+
+  async onModuleInit() {
+    const rows = await this.prisma.scenario.findMany({ select: { id: true, languages: true, graph: true } });
+    for (const row of rows) {
+      if (row.languages.some(isScenarioLanguage)) continue;
+      try {
+        const sample = spokenSample(row.graph);
+        const script = detectScript(sample);
+        const detected = script === 'en' ? ((await this.llm.detectLanguage(sample)) ?? 'en') : script;
+        await this.prisma.scenario.update({
+          where: { id: row.id },
+          data: { languages: [detected], graph: stampLanguage(row.graph, detected) as Prisma.InputJsonValue },
+        });
+        this.logger.log(`Set scenario ${row.id} to ${LANGUAGE_NAME[detected]}.`);
+      } catch (error) {
+        this.logger.error(`Could not detect a language for scenario ${row.id}.`, error instanceof Error ? error.stack : undefined);
+      }
+    }
+  }
 
   list() {
     return this.prisma.scenario.findMany({
@@ -68,6 +95,7 @@ export class ScenariosService {
         name: dto.name,
         description: dto.description ?? null,
         icon: dto.icon,
+        languages: [...new Set(dto.languages)],
         graph: emptyScenarioGraph() as unknown as Prisma.InputJsonValue,
         createdById,
       },
@@ -100,8 +128,28 @@ export class ScenariosService {
     }
   }
 
+  async addLanguage(id: string, language: ScenarioLanguage) {
+    const scenario = await this.prisma.scenario.findUnique({ where: { id }, select: { languages: true, graph: true } });
+    if (!scenario) throw new NotFoundException('Scenario not found.');
+    const languages = scenario.languages.filter(isScenarioLanguage);
+    if (languages.includes(language)) return this.get(id);
+    const source = languages[0];
+    if (!source) throw new BadRequestException('This scenario has no language yet.');
+    const slots = spokenSlots(scenario.graph, source);
+    const translated = await this.llm.translateLines(slots.flatMap((slot) => slot.lines), LANGUAGE_NAME[language]);
+    const graph = applyTranslations(scenario.graph, language, slots, translated);
+    await this.prisma.scenario.update({
+      where: { id },
+      data: { languages: [...languages, language], graph: graph as Prisma.InputJsonValue },
+    });
+    return this.get(id);
+  }
+
   async saveGraph(id: string, dto: SaveScenarioGraphDto) {
-    const graph = parseScenarioGraph(dto);
+    const existing = await this.prisma.scenario.findUnique({ where: { id }, select: { languages: true } });
+    if (!existing) throw new NotFoundException('Scenario not found.');
+    const languages = existing.languages.filter(isScenarioLanguage);
+    const graph = parseScenarioGraph(dto, languages);
     const ttsModelIds = new Set<string>();
     const sttModelIds = new Set<string>();
     const llmModelIds = new Set<string>();

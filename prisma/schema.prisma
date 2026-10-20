@@ -142,6 +142,7 @@ model Scenario {
   description    String?
   icon           String
   graph          Json
+  languages      String[]     @default([])
   active         Boolean      @default(false)
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @updatedAt @map("updated_at")

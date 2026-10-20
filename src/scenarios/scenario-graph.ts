@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import { LANGUAGE_NAME, ScenarioLanguage, isScenarioLanguage } from './scenario-languages';
 
 export const SCENARIO_NODE_TYPES = ['start', 'end', 'tts', 'loop', 'switch', 'closing'] as const;
 
@@ -10,7 +11,8 @@ export type ScenarioNodeType = (typeof SCENARIO_NODE_TYPES)[number];
 
 export interface TtsNodeData {
   modelId: string | null;
-  text: string;
+  text?: string;
+  texts?: Partial<Record<ScenarioLanguage, string>>;
 }
 
 export interface LoopNodeData {
@@ -18,7 +20,8 @@ export interface LoopNodeData {
   ttsModelId: string | null;
   llmModelId: string | null;
   silenceSeconds: number;
-  fillers: string[];
+  fillers?: string[];
+  fillerTexts?: Partial<Record<ScenarioLanguage, string[]>>;
   maxTurns: number;
 }
 
@@ -37,7 +40,8 @@ export interface ClosingNodeData {
   ttsModelId: string | null;
   llmModelId: string | null;
   silenceSeconds: number;
-  text: string;
+  text?: string;
+  texts?: Partial<Record<ScenarioLanguage, string>>;
 }
 
 export type ScenarioGraphNode =
@@ -74,7 +78,7 @@ export function emptyScenarioGraph(): ScenarioGraph {
   return { nodes: [], edges: [] };
 }
 
-export function parseScenarioGraph(input: unknown): ScenarioGraph {
+export function parseScenarioGraph(input: unknown, languages?: ScenarioLanguage[]): ScenarioGraph {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new BadRequestException('Scenario graph must include nodes and edges.');
   }
@@ -86,7 +90,7 @@ export function parseScenarioGraph(input: unknown): ScenarioGraph {
     throw new BadRequestException('This scenario has too many steps.');
   }
 
-  const nodes = record.nodes.map(parseNode);
+  const nodes = record.nodes.map((node) => parseNode(node, languages));
   const ids = new Set<string>();
   for (const node of nodes) {
     if (ids.has(node.id)) throw new BadRequestException('Each step needs its own id.');
@@ -131,7 +135,7 @@ export function readScenarioGraph(value: unknown): ScenarioGraph {
   }
 }
 
-function parseNode(value: unknown): ScenarioGraphNode {
+function parseNode(value: unknown, languages?: ScenarioLanguage[]): ScenarioGraphNode {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new BadRequestException('A scenario step is invalid.');
   }
@@ -144,16 +148,16 @@ function parseNode(value: unknown): ScenarioGraphNode {
   }
   const position = parsePosition(node.position);
   if (node.type === 'tts') {
-    return { id: node.id, type: node.type, position, data: parseTtsData(node.data) };
+    return { id: node.id, type: node.type, position, data: parseTtsData(node.data, languages) };
   }
   if (node.type === 'loop') {
-    return { id: node.id, type: node.type, position, data: parseLoopData(node.data) };
+    return { id: node.id, type: node.type, position, data: parseLoopData(node.data, languages) };
   }
   if (node.type === 'switch') {
     return { id: node.id, type: node.type, position, data: parseSwitchData(node.data) };
   }
   if (node.type === 'closing') {
-    return { id: node.id, type: node.type, position, data: parseClosingData(node.data) };
+    return { id: node.id, type: node.type, position, data: parseClosingData(node.data, languages) };
   }
   return { id: node.id, type: node.type, position, data: {} };
 }
@@ -175,16 +179,20 @@ function isCoordinate(value: unknown): value is number {
 
 const MODEL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-function parseLoopData(value: unknown): LoopNodeData {
+function parseLoopData(value: unknown, languages?: ScenarioLanguage[]): LoopNodeData {
   const data = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-  return {
+  const shared = {
     sttModelId: parseModelId(data.sttModelId, 'Choose a speech-to-text model.'),
     ttsModelId: parseModelId(data.ttsModelId, 'Choose a text-to-speech model.'),
     llmModelId: parseModelId(data.llmModelId, 'Choose an LLM.'),
     silenceSeconds: parseBoundedInt(data.silenceSeconds, 4, 1, 30, 'Silence must be between 1 and 30 seconds.'),
-    fillers: parseFillers(data.fillers),
     maxTurns: parseBoundedInt(data.maxTurns, 8, 1, 20, 'Max turns must be between 1 and 20.'),
   };
+  if (languages && languages.length > 0) {
+    return { ...shared, fillerTexts: requireFillerTexts(data.fillerTexts, languages) };
+  }
+  const fillerTexts = optionalFillerTexts(data.fillerTexts);
+  return { ...shared, fillers: parseFillers(data.fillers), ...(fillerTexts ? { fillerTexts } : {}) };
 }
 
 function parseModelId(value: unknown, message: string): string | null {
@@ -224,36 +232,91 @@ function parseFillers(value: unknown): string[] {
   return fillers;
 }
 
-function parseTtsData(value: unknown): { modelId: string | null; text: string } {
-  const data =
-    value && typeof value === 'object' && !Array.isArray(value) ? (value as { modelId?: unknown; text?: unknown }) : {};
-  let modelId: string | null = null;
-  if (data.modelId !== undefined && data.modelId !== null) {
-    if (typeof data.modelId !== 'string' || !MODEL_ID.test(data.modelId)) {
-      throw new BadRequestException('Choose a text-to-speech model.');
-    }
-    modelId = data.modelId;
+function parseTtsData(value: unknown, languages?: ScenarioLanguage[]): TtsNodeData {
+  const data = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  const modelId = parseModelId(data.modelId, 'Choose a text-to-speech model.');
+  if (languages && languages.length > 0) {
+    return { modelId, texts: requireSpoken(data.texts, languages, 5000, 'text to speech') };
   }
+  const texts = optionalSpoken(data.texts, 5000, 'Text to speech');
   const text = data.text === undefined ? '' : data.text;
   if (typeof text !== 'string' || text.length > 5000) {
     throw new BadRequestException('Text to speech can be at most 5000 characters.');
   }
-  return { modelId, text };
+  return texts ? { modelId, text, texts } : { modelId, text };
 }
 
-function parseClosingData(value: unknown): ClosingNodeData {
+function parseClosingData(value: unknown, languages?: ScenarioLanguage[]): ClosingNodeData {
   const data = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-  const text = data.text === undefined ? CLOSING_QUESTION : data.text;
-  if (typeof text !== 'string' || text.length > 500) {
-    throw new BadRequestException('The closing question can be at most 500 characters.');
-  }
-  return {
+  const shared = {
     sttModelId: parseModelId(data.sttModelId, 'Choose a speech-to-text model.'),
     ttsModelId: parseModelId(data.ttsModelId, 'Choose a text-to-speech model.'),
     llmModelId: parseModelId(data.llmModelId, 'Choose an LLM.'),
     silenceSeconds: parseBoundedInt(data.silenceSeconds, 4, 1, 30, 'Silence must be between 1 and 30 seconds.'),
-    text,
   };
+  if (languages && languages.length > 0) {
+    return { ...shared, texts: requireSpoken(data.texts, languages, 500, 'closing question') };
+  }
+  const text = data.text === undefined ? CLOSING_QUESTION : data.text;
+  if (typeof text !== 'string' || text.length > 500) {
+    throw new BadRequestException('The closing question can be at most 500 characters.');
+  }
+  const texts = optionalSpoken(data.texts, 500, 'The closing question');
+  return texts ? { ...shared, text, texts } : { ...shared, text };
+}
+
+function requireSpoken(value: unknown, languages: ScenarioLanguage[], max: number, label: string) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  const texts = {} as Record<ScenarioLanguage, string>;
+  for (const language of languages) {
+    const line = source[language];
+    if (typeof line !== 'string' || !line.trim()) {
+      throw new BadRequestException(`Write the ${LANGUAGE_NAME[language]} ${label}.`);
+    }
+    if (line.length > max) throw new BadRequestException(`The ${LANGUAGE_NAME[language]} ${label} is too long.`);
+    texts[language] = line.trim();
+  }
+  return texts;
+}
+
+function optionalSpoken(value: unknown, max: number, label: string) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new BadRequestException(`${label} translations are invalid.`);
+  }
+  const texts: Partial<Record<ScenarioLanguage, string>> = {};
+  for (const [code, line] of Object.entries(value)) {
+    if (!isScenarioLanguage(code) || typeof line !== 'string' || line.length > max) {
+      throw new BadRequestException(`${label} translations are invalid.`);
+    }
+    if (line.trim()) texts[code] = line.trim();
+  }
+  return texts;
+}
+
+function requireFillerTexts(value: unknown, languages: ScenarioLanguage[]) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  const texts = {} as Record<ScenarioLanguage, string[]>;
+  for (const language of languages) {
+    const lines = parseFillers(source[language] ?? []);
+    if (lines.length === 0) throw new BadRequestException(`Write the ${LANGUAGE_NAME[language]} delay lines.`);
+    texts[language] = lines;
+  }
+  return texts;
+}
+
+function optionalFillerTexts(value: unknown) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new BadRequestException('Delay line translations are invalid.');
+  }
+  const texts: Partial<Record<ScenarioLanguage, string[]>> = {};
+  for (const [code, lines] of Object.entries(value)) {
+    if (!isScenarioLanguage(code)) throw new BadRequestException('Delay line translations are invalid.');
+    const parsed = parseFillers(lines);
+    if (parsed.length > 0) texts[code] = parsed;
+  }
+  return texts;
 }
 
 function parseSwitchData(value: unknown): SwitchNodeData {

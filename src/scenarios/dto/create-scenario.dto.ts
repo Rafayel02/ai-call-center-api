@@ -1,5 +1,6 @@
 import { Transform } from 'class-transformer';
-import { IsIn, IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsIn, IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
+import { SCENARIO_LANGUAGES, ScenarioLanguage } from '../scenario-languages';
 
 export const SCENARIO_ICONS = [
   'sparkles',
@@ -44,4 +45,10 @@ export class CreateScenarioDto {
 
   @IsIn([...SCENARIO_ICONS])
   icon!: string;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(3)
+  @IsIn([...SCENARIO_LANGUAGES], { each: true })
+  languages!: ScenarioLanguage[];
 }

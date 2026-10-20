@@ -22,7 +22,7 @@ export interface ConversationMessage {
   interrupted?: boolean;
 }
 
-export function inquirySystemPrompt(note?: string, topics?: PromptTopic[], defaultTopicId?: string, closingReturn = false): string {
+export function inquirySystemPrompt(note?: string, topics?: PromptTopic[], defaultTopicId?: string, closingReturn = false, language?: string): string {
   const lines = closingReturn
     ? [
         'You are on a live phone call. The caller was just asked if they have other questions, and they do. Their latest message is that answer.',
@@ -60,6 +60,9 @@ export function inquirySystemPrompt(note?: string, topics?: PromptTopic[], defau
     );
   }
   lines.push('', topics && topics.length > 0 && defaultTopicId ? 'Return JSON with reply, inquiry, phase, and topicId.' : 'Return JSON with reply, inquiry, and phase.');
+  if (language?.trim()) {
+    lines.push('', `Reply only in ${language.trim()}. Do not switch language.`);
+  }
   if (note?.trim()) {
     lines.push('', `Note: ${note.trim()}`);
   }

@@ -1,0 +1,1 @@
+ALTER TABLE "scenarios" ADD COLUMN "languages" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];

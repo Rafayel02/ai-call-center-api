@@ -33,6 +33,7 @@ const completeSchema = z
       .optional(),
     defaultTopicId: topicIdSchema.optional(),
     closingReturn: z.boolean().optional(),
+    language: z.string().trim().max(40).optional(),
   })
   .superRefine((value, context) => {
     const topics = value.topics ?? [];
@@ -153,6 +154,7 @@ export class LlmService {
       topics: parsed.data.topics,
       defaultTopicId: parsed.data.defaultTopicId,
       closingReturn: parsed.data.closingReturn === true,
+      language: parsed.data.language,
     };
     const snapshot = {
       modelId: model.id,
@@ -192,6 +194,46 @@ export class LlmService {
       if (error instanceof LlmCompletionError) throw new BadRequestException(error.message);
       throw error;
     }
+  }
+
+  async translateLines(lines: string[], targetName: string) {
+    const pending = lines.map((line, index) => (line.trim() ? index : -1)).filter((index) => index >= 0);
+    if (pending.length === 0) return lines.map(() => '');
+    const model = await this.firstEnabled();
+    const raw = await this.providers.get(model.provider).text(
+      model.config as Record<string, unknown>,
+      `Translate each line into ${targetName}. Keep the same order and the same number of lines. Return JSON {"lines":["..."]}.`,
+      JSON.stringify({ lines: pending.map((index) => lines[index]) }),
+    );
+    const translated = readLineList(raw);
+    if (translated.length !== pending.length) throw new BadRequestException('Translation did not return every line.');
+    const result = lines.map(() => '');
+    pending.forEach((index, offset) => {
+      result[index] = translated[offset];
+    });
+    return result;
+  }
+
+  async detectLanguage(sample: string): Promise<'hy' | 'en' | 'ru' | null> {
+    const model = await this.prisma.llmModel.findFirst({ where: { enabled: true }, orderBy: { createdAt: 'asc' } });
+    if (!model || !sample.trim()) return null;
+    try {
+      const raw = await this.providers.get(model.provider).text(
+        model.config as Record<string, unknown>,
+        'Detect the language of the text. Reply with JSON {"language":"hy"} for Armenian, {"language":"en"} for English, or {"language":"ru"} for Russian.',
+        sample.slice(0, 4000),
+      );
+      const parsed = JSON.parse(raw) as { language?: unknown };
+      return parsed.language === 'hy' || parsed.language === 'en' || parsed.language === 'ru' ? parsed.language : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async firstEnabled() {
+    const model = await this.prisma.llmModel.findFirst({ where: { enabled: true }, orderBy: { createdAt: 'asc' } });
+    if (!model) throw new BadRequestException('Add an LLM before adding a language.');
+    return model;
   }
 
   async route(id: string, dto: RouteCallDto) {
@@ -298,4 +340,18 @@ export class LlmService {
       createdBy: model.createdBy,
     };
   }
+}
+
+function readLineList(raw: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new BadRequestException('Translation did not return every line.');
+  }
+  const lines = parsed && typeof parsed === 'object' && 'lines' in parsed ? (parsed as { lines?: unknown }).lines : null;
+  if (!Array.isArray(lines) || lines.some((line) => typeof line !== 'string')) {
+    throw new BadRequestException('Translation did not return every line.');
+  }
+  return lines;
 }

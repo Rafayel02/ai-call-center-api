@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AuthUser, CurrentUser } from '../common/decorators/current-user.decorator';
+import { AddScenarioLanguageDto } from './dto/add-scenario-language.dto';
 import { CreateScenarioDto } from './dto/create-scenario.dto';
 import { SaveScenarioGraphDto } from './dto/save-scenario-graph.dto';
 import { AttachPhoneNumberDto } from './dto/attach-phone-number.dto';
@@ -25,6 +26,11 @@ export class ScenariosController {
   @Get(':id')
   get(@Param('id', ParseUUIDPipe) id: string) {
     return this.scenarios.get(id);
+  }
+
+  @Post(':id/languages')
+  addLanguage(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AddScenarioLanguageDto) {
+    return this.scenarios.addLanguage(id, dto.language);
   }
 
   @Patch(':id/phone-number')

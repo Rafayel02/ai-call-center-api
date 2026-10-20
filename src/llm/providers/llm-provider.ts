@@ -48,6 +48,7 @@ export interface LlmCompletionRequest {
   topics?: RouteTopic[];
   defaultTopicId?: string;
   closingReturn?: boolean;
+  language?: string;
 }
 
 export interface LlmRouteRequest {
@@ -77,4 +78,5 @@ export interface LlmProviderClient {
   complete(config: Record<string, unknown>, request: LlmCompletionRequest): Promise<LlmCompletionResult>;
   route(config: Record<string, unknown>, request: LlmRouteRequest): Promise<{ topicId: string }>;
   judgeClosing(config: Record<string, unknown>, request: LlmClosingRequest): Promise<LlmClosingResult>;
+  text(config: Record<string, unknown>, system: string, user: string): Promise<string>;
 }

@@ -1,6 +1,7 @@
 import { WebSocket } from 'ws';
 import { ExecutionContext, SpokenKind } from '../scenario-executions/execution-context';
 import { ScenarioGraph, ScenarioGraphNode } from '../scenarios/scenario-graph';
+import { LANGUAGE_NAME, ScenarioLanguage, SPOKEN_NAME, delayLines, matchSpokenLanguage, spokenLine } from '../scenarios/scenario-languages';
 import { CallLog } from './call-log';
 import { decodeUlaw, pcmWav, rms } from './ulaw';
 
@@ -21,7 +22,7 @@ export interface CallDeps {
   transcribe(modelId: string, wav: Buffer, execution: ExecutionContext | null): Promise<string>;
   complete(
     modelId: string,
-    input: { messages: Array<{ role: 'user' | 'assistant'; content: string }>; note?: string; topics?: Array<{ id: string; description: string }>; defaultTopicId?: string; closingReturn?: boolean },
+    input: { messages: Array<{ role: 'user' | 'assistant'; content: string }>; note?: string; topics?: Array<{ id: string; description: string }>; defaultTopicId?: string; closingReturn?: boolean; language?: string },
     execution: ExecutionContext | null,
   ): Promise<Turn>;
   judgeClosing(modelId: string, question: string, answer: string, execution: ExecutionContext | null): Promise<'questions' | 'done'>;
@@ -50,13 +51,17 @@ export class PhoneScenarioSession {
   private reachedEnd = false;
   private utteranceStartMs = 0;
   private utteranceDurationMs = 0;
+  private language: ScenarioLanguage;
 
   constructor(
     private readonly socket: WebSocket,
     private readonly graph: ScenarioGraph,
     private readonly deps: CallDeps,
     private log: CallLog,
-  ) {}
+    private readonly languages: ScenarioLanguage[] = ['en'],
+  ) {
+    this.language = languages[0] ?? 'en';
+  }
 
   useLog(log: CallLog) {
     this.log = log;
@@ -92,6 +97,7 @@ export class PhoneScenarioSession {
 
   async run() {
     try {
+      await this.chooseLanguage();
       let nodeId = this.next(this.node('start')?.id ?? '', null);
       const seen = new Set<string>();
       while (nodeId && !this.closed) {
@@ -100,7 +106,7 @@ export class PhoneScenarioSession {
         if (!node || node.type === 'end' || node.type === 'start') break;
         seen.add(nodeId);
         if (node.type === 'tts') {
-          await this.speak(node.data.modelId, node.data.text, node.id, 'step');
+          await this.speak(node.data.modelId, spokenLine(node.data, this.language), node.id, 'step');
           nodeId = this.next(node.id, null);
         } else if (node.type === 'loop') {
           const accepted = await this.loop(node);
@@ -126,12 +132,31 @@ export class PhoneScenarioSession {
     }
   }
 
+  private async chooseLanguage() {
+    if (this.languages.length < 2 || this.closed) return;
+    let ttsModelId: string | null = null;
+    let sttModelId: string | null = null;
+    for (const node of this.graph.nodes) {
+      if (node.type === 'tts' && node.data.modelId) ttsModelId ??= node.data.modelId;
+      if ((node.type === 'loop' || node.type === 'closing') && node.data.ttsModelId) ttsModelId ??= node.data.ttsModelId;
+      if ((node.type === 'loop' || node.type === 'closing') && node.data.sttModelId) sttModelId ??= node.data.sttModelId;
+    }
+    if (!ttsModelId || !sttModelId) return;
+    await this.speak(ttsModelId, this.languages.map((code) => SPOKEN_NAME[code]).join('. '), 'language', 'step');
+    const heard = await this.listen(4);
+    if (!heard || this.closed) return;
+    const transcript = await this.deps.transcribe(sttModelId, pcmWav(heard), this.log.context('language', null));
+    const matched = matchSpokenLanguage(transcript, this.languages);
+    if (matched) this.language = matched;
+  }
+
   private heardContext(nodeId: string) {
     return this.log.context(nodeId, null, { startedMs: this.utteranceStartMs, durationMs: this.utteranceDurationMs });
   }
 
   private async loop(node: Extract<ScenarioGraphNode, { type: 'loop' }>) {
-    const { sttModelId, ttsModelId, llmModelId, fillers, silenceSeconds, maxTurns } = node.data;
+    const { sttModelId, ttsModelId, llmModelId, silenceSeconds, maxTurns } = node.data;
+    const fillers = delayLines(node.data, this.language);
     if (!sttModelId || !ttsModelId || !llmModelId) return false;
     let turns = 0;
     while (!this.closed && turns < maxTurns) {
@@ -155,6 +180,7 @@ export class PhoneScenarioSession {
         llmModelId,
         {
           messages: this.messages,
+          language: LANGUAGE_NAME[this.language],
           ...(fromClosing ? { closingReturn: true } : {}),
           ...(topics ?? {}),
         },
@@ -176,8 +202,9 @@ export class PhoneScenarioSession {
   }
 
   private async closing(node: Extract<ScenarioGraphNode, { type: 'closing' }>) {
-    const { ttsModelId, sttModelId, llmModelId, text, silenceSeconds } = node.data;
-    if (!ttsModelId || !sttModelId || !llmModelId) return 'done' as const;
+    const { ttsModelId, sttModelId, llmModelId, silenceSeconds } = node.data;
+    const text = spokenLine(node.data, this.language);
+    if (!ttsModelId || !sttModelId || !llmModelId || !text) return 'done' as const;
     await this.speak(ttsModelId, text, node.id, 'step');
     this.messages.push({ role: 'assistant', content: text });
     const heard = await this.listen(silenceSeconds);
