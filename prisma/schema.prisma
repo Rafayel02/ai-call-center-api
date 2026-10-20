@@ -134,6 +134,9 @@ model ScenarioExecution {
   topicId        String?         @map("topic_id")
   topicLabel     String?         @map("topic_label")
   errorMessage   String?         @map("error_message")
+  priceUsd       Decimal?        @map("price_usd") @db.Decimal(12, 6)
+  priceComplete  Boolean         @default(false) @map("price_complete")
+  priceParts     Json?           @map("price_parts")
   graph          Json
   peaks          Json?
   callerMime     String?         @map("caller_mime")
@@ -279,6 +282,7 @@ model TextToSpeechClip {
   audio           Bytes
   mimeType        String            @map("mime_type")
   byteSize        Int               @map("byte_size")
+  priceUsd        Decimal?          @map("price_usd") @db.Decimal(12, 6)
   createdAt       DateTime          @default(now()) @map("created_at")
 
   @@index([modelId])

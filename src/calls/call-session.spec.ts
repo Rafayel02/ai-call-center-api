@@ -6,7 +6,7 @@ import { InquiryTurn } from '../llm/inquiry-turn';
 import { SessionEnding, SessionEvent } from '../scenario-executions/scenario-executions.service';
 import { parseScenarioGraph } from '../scenarios/scenario-graph';
 import { FRAME_SAMPLES } from './call-timing';
-import { CallChannel, CallServices, CallSession, TurnRequest } from './call-session';
+import { CallChannel, CallServices, CallSession, ClosingOutcome, MAX_CLOSING_RETURNS, TurnRequest } from './call-session';
 import { OutboundMessage } from './call-transport';
 
 const TTS = '11111111-1111-4111-8111-111111111111';
@@ -16,7 +16,7 @@ const LLM = '33333333-3333-4333-8333-333333333333';
 const loudFrame = encodeUlaw(Int16Array.from({ length: FRAME_SAMPLES }, (_, index) => (index % 2 ? 6000 : -6000))).toString('base64');
 const quietFrame = Buffer.alloc(FRAME_SAMPLES, ULAW_SILENCE).toString('base64');
 
-function graphWith(options: { menu?: boolean; loop?: Record<string, unknown> } = {}) {
+function graphWith(options: { menu?: boolean; closing?: boolean; loop?: Record<string, unknown> } = {}) {
   const nodes: unknown[] = [
     { id: 'start', type: 'start', position: { x: 0, y: 0 }, data: {} },
     { id: 'greet', type: 'tts', position: { x: 0, y: 0 }, data: { modelId: TTS, text: 'Hello.' } },
@@ -43,7 +43,6 @@ function graphWith(options: { menu?: boolean; loop?: Record<string, unknown> } =
   ];
   const edges: unknown[] = [
     { id: 'e2', source: 'greet', target: 'loop' },
-    { id: 'e3', source: 'loop', target: 'switch' },
     { id: 'e4', source: 'switch', sourceHandle: 'hours', target: 'hours-line' },
     { id: 'e5', source: 'switch', sourceHandle: 'default', target: 'callback-line' },
     { id: 'e6', source: 'hours-line', target: 'end' },
@@ -73,6 +72,21 @@ function graphWith(options: { menu?: boolean; loop?: Record<string, unknown> } =
   } else {
     edges.push({ id: 'e1', source: 'start', target: 'greet' });
   }
+  if (options.closing) {
+    nodes.push({
+      id: 'closing',
+      type: 'closing',
+      position: { x: 0, y: 0 },
+      data: { sttModelId: STT, ttsModelId: TTS, llmModelId: LLM, silenceSeconds: 1, text: 'Anything else?' },
+    });
+    edges.push(
+      { id: 'e3', source: 'loop', target: 'closing' },
+      { id: 'e10', source: 'closing', sourceHandle: 'questions', target: 'loop' },
+      { id: 'e11', source: 'closing', sourceHandle: 'done', target: 'switch' },
+    );
+  } else {
+    edges.push({ id: 'e3', source: 'loop', target: 'switch' });
+  }
   return parseScenarioGraph({ nodes, edges });
 }
 
@@ -81,6 +95,7 @@ interface Harness {
   sent: OutboundMessage[];
   events: Map<number, SessionEvent>;
   turns: TurnRequest[];
+  judged: Array<{ question: string; answer: string }>;
   clips: string[];
   recordings: Array<{ caller: Buffer; mix: Buffer; peaks: number[] }>;
   ending: () => SessionEnding | null;
@@ -95,17 +110,21 @@ function start(options: {
   channel?: CallChannel;
   turns?: InquiryTurn[];
   transcripts?: string[];
+  /** What the closing judge answers, in order; then 'done'. */
+  closings?: ClosingOutcome[];
   failTranscribe?: boolean;
   markDelayMs?: number;
 }): Harness {
   const sent: OutboundMessage[] = [];
   const events = new Map<number, SessionEvent>();
   const turns: TurnRequest[] = [];
+  const judged: Harness['judged'] = [];
   const clips: string[] = [];
   const recordings: Harness['recordings'] = [];
   let closed: SessionEnding | null = null;
   const replies = [...(options.turns ?? [])];
   const transcripts = [...(options.transcripts ?? [])];
+  const closings = [...(options.closings ?? [])];
   let session: CallSession | null = null;
 
   const services: CallServices = {
@@ -123,6 +142,10 @@ function start(options: {
       await new Promise((resolve) => setTimeout(resolve, 5));
       if (signal.aborted) throw Object.assign(new Error('stopped'), { name: 'AbortError' });
       return replies.shift() ?? { reply: '', inquiry: 'Working hours', phase: 'accepted', topicId: 'hours' };
+    },
+    async judgeClosing(_modelId, request) {
+      judged.push(request);
+      return closings.shift() ?? 'done';
     },
     async describeLlm(modelId) {
       return { modelId, modelName: 'Fake' };
@@ -166,6 +189,7 @@ function start(options: {
     sent,
     events,
     turns,
+    judged,
     clips,
     recordings,
     ending: () => closed,
@@ -293,6 +317,91 @@ test('no key plays the prompt again, then follows the default', async () => {
   assert.deepEqual(call.ofType('menu.chosen')[0]?.payload, { optionId: 'hy', label: 'Armenian', key: null, usedDefault: true, promptsPlayed: 2 });
   assert.equal(outcome.status, 'STOPPED');
   assert.equal(outcome.menuChoice, 'Armenian');
+});
+
+/** Waits until the closing question has been asked `times` times and played out. */
+const closingAsked = (call: Harness, times: number) =>
+  call.waitFor(
+    () => call.ofType('tts.played').filter((event) => event.payload.text === 'Anything else?' && typeof event.payload.endMs === 'number').length >= times,
+    `closing question ${times}`,
+  );
+
+test('a closing answer with more questions goes back to the loop, which answers it first', async () => {
+  const call = start({
+    graph: graphWith({ closing: true }),
+    transcripts: ['What are your hours?', 'And where are you?', 'No, thanks.'],
+    closings: ['questions', 'done'],
+  });
+  await call.waitFor(() => call.ofType('node.entered').some((event) => event.nodeId === 'loop'), 'the loop');
+  call.speak(30, 60);
+  await closingAsked(call, 1);
+  call.speak(30, 60);
+  await closingAsked(call, 2);
+  call.speak(30, 60);
+  const outcome = await call.session.done;
+
+  assert.equal(outcome.status, 'FINISHED');
+  assert.deepEqual(progressSteps(call), ['start', 'greet', 'loop', 'closing', 'loop', 'closing', 'switch', 'hours-line', 'end']);
+  assert.deepEqual(call.judged, [
+    { question: 'Anything else?', answer: 'And where are you?' },
+    { question: 'Anything else?', answer: 'No, thanks.' },
+  ]);
+  assert.deepEqual(
+    call.ofType('closing.routed').map((event) => [event.payload.outcome, event.payload.nextNodeId]),
+    [
+      ['questions', 'loop'],
+      ['done', 'switch'],
+    ],
+  );
+  assert.equal(call.turns[0]?.closingReturn, undefined);
+  assert.equal(call.turns[0]?.topics?.[0]?.id, 'hours', 'the loop sees the switch past the closing step');
+  assert.equal(call.turns[1]?.closingReturn, true);
+  assert.deepEqual(call.turns[1]?.messages.slice(-2), [
+    { role: 'assistant', content: 'Anything else?' },
+    { role: 'user', content: 'And where are you?' },
+  ]);
+  assert.equal(call.ofType('turn.counted')[1]?.payload.turn, 1, 'the closing answer is the first turn back in the loop');
+  assert.ok(call.ofType('tts.played').filter((event) => event.payload.kind === 'delay').length >= 2, 'the loop played a delay line for the closing answer');
+});
+
+test('silence after the closing question counts as no more questions', async () => {
+  const call = start({ graph: graphWith({ closing: true }), channel: 'PHONE' });
+  await call.waitFor(() => call.ofType('node.entered').some((event) => event.nodeId === 'loop'), 'the loop');
+  call.speak(30, 60);
+  const outcome = await call.session.done;
+
+  assert.equal(outcome.status, 'FINISHED');
+  assert.equal(outcome.callbackReason, null);
+  assert.deepEqual(call.judged, []);
+  assert.deepEqual(call.ofType('closing.routed')[0]?.payload, {
+    outcome: 'done',
+    question: 'Anything else?',
+    answer: null,
+    silent: true,
+    nextNodeId: 'switch',
+  });
+  assert.deepEqual(
+    call.ofType('node.entered').map((event) => event.nodeId),
+    ['start', 'greet', 'loop', 'closing', 'switch', 'hours-line', 'end'],
+  );
+});
+
+test('the call stops when the caller keeps having questions', async () => {
+  const call = start({
+    graph: graphWith({ closing: true, loop: { maxTurns: 20 } }),
+    closings: Array.from({ length: MAX_CLOSING_RETURNS + 1 }, () => 'questions' as const),
+  });
+  await call.waitFor(() => call.ofType('node.entered').some((event) => event.nodeId === 'loop'), 'the loop');
+  call.speak(30, 60);
+  for (let asked = 1; asked <= MAX_CLOSING_RETURNS + 1; asked += 1) {
+    await closingAsked(call, asked);
+    call.speak(30, 60);
+  }
+  const outcome = await call.session.done;
+
+  assert.equal(outcome.status, 'FAILED');
+  assert.equal(outcome.errorMessage, 'The caller still had questions after several returns, so the scenario stopped.');
+  assert.equal(call.ofType('closing.routed').length, MAX_CLOSING_RETURNS + 1);
 });
 
 test('the recordings start at zero and last as long as the call', async () => {

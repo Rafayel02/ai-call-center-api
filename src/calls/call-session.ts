@@ -4,11 +4,11 @@ import { wavFile } from '../common/audio/wav';
 import { ConversationMessage, InquiryTurn, inquirySystemPrompt } from '../llm/inquiry-turn';
 import { ExecutionContext, SpokenKind } from '../scenario-executions/execution-context';
 import { SessionEnding, SessionEvent } from '../scenario-executions/scenario-executions.service';
-import { LoopNodeData, MenuNodeData, MenuOption, ScenarioGraph, ScenarioGraphNode, ScenarioNodeType } from '../scenarios/scenario-graph';
+import { CLOSING_HANDLES, LoopNodeData, MenuNodeData, MenuOption, ScenarioGraph, ScenarioGraphNode, ScenarioNodeType } from '../scenarios/scenario-graph';
 import { branchTarget, LoopTopics, nextStep, topicsAhead } from '../scenarios/scenario-plan';
 import { CallLog } from './call-log';
 import { CallRecorder } from './call-recorder';
-import { END_PAUSE_MS, HEARTBEAT_MS, MARK_GRACE_MS, MEDIA_CHUNK_BYTES, SAMPLE_RATE, START_PAUSE_MS } from './call-timing';
+import { CLOSING_NO_INPUT_SECONDS, END_PAUSE_MS, HEARTBEAT_MS, MARK_GRACE_MS, MEDIA_CHUNK_BYTES, SAMPLE_RATE, START_PAUSE_MS } from './call-timing';
 import { CallProgress, CallTransport, InboundMessage } from './call-transport';
 import { Ear, Utterance } from './ear';
 
@@ -24,16 +24,23 @@ const NODE_TITLE: Record<ScenarioNodeType, string> = {
   loop: 'Conversational loop',
   switch: 'Topic switch',
   menu: 'Keypad menu',
+  closing: 'Closing',
 };
+
+/** How often a closing step's Still has questions may send the caller back before the call stops. */
+export const MAX_CLOSING_RETURNS = 8;
 
 export type CallChannel = 'BROWSER' | 'PHONE';
 export type CallbackReason = 'TURN_LIMIT' | 'SILENCE' | 'DEFAULT_TOPIC' | 'ERROR';
+export type ClosingOutcome = (typeof CLOSING_HANDLES)[number];
 
 export interface TurnRequest {
   messages: ConversationMessage[];
   note?: string;
   topics?: LoopTopics['topics'];
   defaultTopicId?: string;
+  /** The first turn after a closing step sent the caller back with a question. */
+  closingReturn?: boolean;
 }
 
 /** What the session needs from the rest of the API. The services record provider events from the context they get. */
@@ -42,6 +49,8 @@ export interface CallServices {
   /** A phone-format (μ-law) clip of a line. */
   clip(modelId: string, text: string, context: ExecutionContext, signal: AbortSignal): Promise<Buffer>;
   complete(modelId: string, request: TurnRequest, context: ExecutionContext, signal: AbortSignal): Promise<InquiryTurn>;
+  /** Whether the caller's answer to a closing question still has questions. */
+  judgeClosing(modelId: string, request: { question: string; answer: string }, context: ExecutionContext, signal: AbortSignal): Promise<ClosingOutcome>;
   /** The model fields `llm.aborted` copies, as the services do for `llm.completed`. */
   describeLlm(modelId: string): Promise<Record<string, unknown>>;
   writeEvents(events: SessionEvent[]): Promise<void>;
@@ -71,7 +80,7 @@ export interface CallOutcome extends SessionEnding {
   callbackReason: CallbackReason | null;
 }
 
-/** A provider failed inside a conversational loop, after the sorry line was played. */
+/** A provider failed while the caller was talking to a conversational loop (after its sorry line) or a closing step. */
 class LoopFailure extends Error {}
 
 function isAbort(error: unknown) {
@@ -240,6 +249,9 @@ export class CallSession {
   private topicLabel: string | null = null;
   private callbackReason: CallbackReason | null = null;
   private callerLeft = false;
+  /** A closing step sent the caller back; the next loop answers the closing answer first. */
+  private resumeFromClosing = false;
+  private closingReturns = 0;
   private readonly llmSnapshots = new Map<string, Promise<Record<string, unknown>>>();
 
   constructor(
@@ -390,6 +402,10 @@ export class CallSession {
         next = nextStep(this.options.graph, step.id);
       } else if (step.type === 'switch') {
         next = this.route(step);
+      } else if (step.type === 'closing') {
+        const outcome = await this.runClosing(step);
+        if (!outcome) return;
+        next = this.node(branchTarget(this.options.graph, step.id, outcome));
       } else {
         await this.speaker.drained();
         await this.pause(this.timing.endPauseMs);
@@ -537,6 +553,59 @@ export class CallSession {
     return this.node(nextId);
   }
 
+  /**
+   * Asks the closing question and lets the LLM judge the answer. Silence after the question counts as no more
+   * questions. Still has questions sends the caller back, at most MAX_CLOSING_RETURNS times.
+   */
+  private async runClosing(node: Extract<ScenarioGraphNode, { type: 'closing' }>): Promise<ClosingOutcome | null> {
+    const data = node.data;
+    const question = data.text.trim();
+    let answer = '';
+    let outcome: ClosingOutcome = 'done';
+    try {
+      await this.speakFixed(data.ttsModelId ?? '', question, 'step', node.id, this.run.signal);
+      if (this.aborted) return null;
+      this.messages.push({ role: 'assistant', content: question });
+      answer = await this.hearAnswer(data.sttModelId ?? '', data.silenceSeconds, node.id);
+      if (this.aborted) return null;
+      if (answer) {
+        this.messages.push({ role: 'user', content: answer });
+        this.progress({ kind: 'caller', text: answer });
+        outcome = await this.options.services.judgeClosing(data.llmModelId ?? '', { question, answer }, this.log.context({ nodeId: node.id }), this.run.signal);
+        if (this.aborted) return null;
+      }
+    } catch (error) {
+      if (this.aborted || isAbort(error)) return null;
+      throw new LoopFailure(messageOf(error));
+    }
+    const nextNodeId = branchTarget(this.options.graph, node.id, outcome);
+    this.log.event('closing.routed', { outcome, question, answer: answer || null, ...(answer ? {} : { silent: true }), nextNodeId }, node.id);
+    this.resumeFromClosing = outcome === 'questions';
+    if (outcome === 'questions') {
+      this.closingReturns += 1;
+      if (this.closingReturns > MAX_CLOSING_RETURNS) throw new Error('The caller still had questions after several returns, so the scenario stopped.');
+    }
+    return outcome;
+  }
+
+  /** The first non-empty answer, or '' when the caller stays silent for CLOSING_NO_INPUT_SECONDS. */
+  private async hearAnswer(sttModelId: string, silenceSeconds: number, nodeId: string) {
+    const listener = new Listener(silenceSeconds * 1000, this.clock());
+    this.listener = listener;
+    try {
+      while (!this.aborted) {
+        const utterance = await this.nextUtterance(listener, CLOSING_NO_INPUT_SECONDS * this.timing.secondMs);
+        if (this.aborted || utterance === 'silence') return '';
+        const context = this.log.context({ nodeId, utterance });
+        const text = (await this.options.services.transcribe(sttModelId, wavFile(utterance.samples), context, this.run.signal)).trim();
+        if (text) return text;
+      }
+      return '';
+    } finally {
+      this.listener = null;
+    }
+  }
+
   /** Only phone calls are marked, because a browser call has no number to call back. A call keeps its first reason. */
   private markCallback(reason: CallbackReason) {
     if (this.options.channel !== 'PHONE' || this.callbackReason) return;
@@ -551,37 +620,47 @@ export class CallSession {
     const sttModelId = data.sttModelId ?? '';
     const ttsModelId = data.ttsModelId ?? '';
     const llmModelId = data.llmModelId ?? '';
-    const priorMessages = this.messages.length;
+    // Back from a closing step: its answer is this loop's first caller turn.
+    const handoff = this.resumeFromClosing && this.messages[this.messages.length - 1]?.role === 'user';
+    this.resumeFromClosing = false;
+    const priorMessages = handoff ? this.messages.length - 1 : this.messages.length;
+    let pendingHandoff = handoff;
     let note: string | undefined;
     let skipFiller = false;
 
     try {
       const fillers = await this.prepareFillers(ttsModelId, data.fillers, nodeId);
       while (!this.aborted) {
-        const utterance = await this.nextUtterance(listener, data.noInputSeconds * this.timing.secondMs);
-        if (this.aborted) return;
-        if (utterance === 'silence') return this.unresolved('SILENCE', nodeId);
-
-        const delay =
-          !skipFiller && !listener.hasPendingSpeech() ? this.playUntilSpeech(listener, (signal) => this.playDelay(fillers, nodeId, signal)) : null;
-        let text = '';
-        try {
-          const context = this.log.context({ nodeId, utterance });
-          text = (await this.options.services.transcribe(sttModelId, wavFile(utterance.samples), context, this.run.signal)).trim();
-        } catch (error) {
-          delay?.stop();
-          await delay?.done;
-          throw error;
-        }
-        if (this.aborted || !text) {
-          delay?.stop();
-          await delay?.done;
+        const fromClosing = pendingHandoff;
+        pendingHandoff = false;
+        let delay: ReturnType<CallSession['playUntilSpeech']> | null = null;
+        if (fromClosing) {
+          delay = this.playUntilSpeech(listener, (signal) => this.playDelay(fillers, nodeId, signal));
+        } else {
+          const utterance = await this.nextUtterance(listener, data.noInputSeconds * this.timing.secondMs);
           if (this.aborted) return;
-          continue;
-        }
+          if (utterance === 'silence') return this.unresolved('SILENCE', nodeId);
 
-        this.messages.push({ role: 'user', content: text });
-        this.progress({ kind: 'caller', text });
+          delay = !skipFiller && !listener.hasPendingSpeech() ? this.playUntilSpeech(listener, (signal) => this.playDelay(fillers, nodeId, signal)) : null;
+          let text = '';
+          try {
+            const context = this.log.context({ nodeId, utterance });
+            text = (await this.options.services.transcribe(sttModelId, wavFile(utterance.samples), context, this.run.signal)).trim();
+          } catch (error) {
+            delay?.stop();
+            await delay?.done;
+            throw error;
+          }
+          if (this.aborted || !text) {
+            delay?.stop();
+            await delay?.done;
+            if (this.aborted) return;
+            continue;
+          }
+
+          this.messages.push({ role: 'user', content: text });
+          this.progress({ kind: 'caller', text });
+        }
         const turnsHere = this.messages.slice(priorMessages).filter((message) => message.role === 'user').length;
         this.log.event('turn.counted', { turn: turnsHere, maxTurns: data.maxTurns }, nodeId);
         if (turnsHere > data.maxTurns) {
@@ -602,6 +681,7 @@ export class CallSession {
           messages: this.messages.map((message) => ({ ...message })),
           ...(note ? { note } : {}),
           ...(topics ? { topics: topics.topics, defaultTopicId: topics.defaultTopicId } : {}),
+          ...(fromClosing ? { closingReturn: true } : {}),
         };
         const turnPromise = this.options.services.complete(llmModelId, request, this.log.context({ nodeId }), llmSignal);
         void turnPromise.catch(() => undefined);
@@ -782,7 +862,7 @@ export class CallSession {
       'llm.aborted',
       {
         modelId,
-        systemPrompt: inquirySystemPrompt(request.note, request.topics, request.defaultTopicId),
+        systemPrompt: inquirySystemPrompt(request.note, request.topics, request.defaultTopicId, request.closingReturn === true),
         messages: request.messages.map((message) => ({
           role: message.role,
           content: message.interrupted

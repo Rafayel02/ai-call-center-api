@@ -180,6 +180,7 @@ export class CallsService implements BeforeApplicationShutdown {
       },
       clip: async (modelId, text, context, signal) => (await this.textToSpeech.clip(modelId, text, 'ulaw_8000', context, signal)).audio,
       complete: (modelId, request, context, signal) => this.llm.complete(modelId, request, context, signal),
+      judgeClosing: async (modelId, request, context, signal) => (await this.llm.judgeClosing(modelId, request, context, signal)).outcome,
       describeLlm: async (modelId) => {
         const model = await this.llm.get(modelId);
         return { modelId: model.id, modelName: model.name, provider: model.provider, providerModel: model.config.modelId };

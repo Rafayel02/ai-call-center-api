@@ -222,6 +222,57 @@ test('fills the new loop settings and checks their range', () => {
   );
 });
 
+test('accepts a closing step that returns to a loop and finishes through End', () => {
+  const graph = parseScenarioGraph({
+    nodes: [
+      start,
+      end,
+      {
+        id: 'loop-1',
+        type: 'loop',
+        position: { x: 10, y: 10 },
+        data: { silenceSeconds: 4, fillers: ['One moment.'], maxTurns: 4 },
+      },
+      {
+        id: 'closing-1',
+        type: 'closing',
+        position: { x: 40, y: 10 },
+        data: { text: 'Do you have other questions?' },
+      },
+    ],
+    edges: [
+      { id: 'e-1', source: 'start', target: 'loop-1' },
+      { id: 'e-2', source: 'loop-1', target: 'closing-1' },
+      { id: 'e-3', source: 'closing-1', sourceHandle: 'questions', target: 'loop-1' },
+      { id: 'e-4', source: 'closing-1', sourceHandle: 'done', target: 'end' },
+    ],
+  });
+  const closing = graph.nodes.find((node) => node.id === 'closing-1');
+  assert.equal(closing?.type, 'closing');
+  if (closing?.type !== 'closing') return;
+  assert.equal(closing.data.text, 'Do you have other questions?');
+  assert.equal(closing.data.silenceSeconds, 4);
+});
+
+test('rejects a closing step whose finished path does not reach end', () => {
+  assert.throws(
+    () =>
+      parseScenarioGraph({
+        nodes: [
+          end,
+          { id: 'loop-1', type: 'loop', position: { x: 0, y: 0 }, data: {} },
+          { id: 'closing-1', type: 'closing', position: { x: 20, y: 0 }, data: {} },
+        ],
+        edges: [
+          { id: 'e-1', source: 'closing-1', sourceHandle: 'questions', target: 'loop-1' },
+          { id: 'e-2', source: 'closing-1', sourceHandle: 'done', target: 'loop-1' },
+          { id: 'e-3', source: 'loop-1', target: 'closing-1' },
+        ],
+      }),
+    /No more questions must lead to End/,
+  );
+});
+
 test('rejects a topic that does not lead to end', () => {
   assert.throws(
     () =>

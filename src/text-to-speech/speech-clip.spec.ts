@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { speechClipKey } from './speech-clip';
+import { reusedSpeechPayload, speechClipKey, speechWasReused } from './speech-clip';
 
 const base = {
   modelId: '287b9bcf-5d7c-4434-aaac-509f02240892',
@@ -18,6 +18,17 @@ test('an MP3 clip keeps the key it had before formats, and a phone clip gets its
   assert.equal(key, '0ff76eda945336d6e98d9fcb49f7e408afe06cd6249a123799a4462f0dc4567f');
   assert.equal(speechClipKey({ ...base, format: 'mp3_44100_128' }), key);
   assert.notEqual(speechClipKey({ ...base, format: 'ulaw_8000' }), key);
+});
+
+test('a later play of a saved line costs nothing, and the play that saved it keeps the cost', () => {
+  const saved = new Date('2026-10-20T12:00:00.000Z');
+  const again = new Date(saved.getTime() + 10_001);
+  const first = new Date(saved.getTime() + 500);
+  assert.equal(speechWasReused(again, saved), true);
+  assert.equal(speechWasReused(first, saved), false);
+  assert.deepEqual(reusedSpeechPayload({ text: 'Hello' }, again, saved), { text: 'Hello', cached: true });
+  assert.equal(reusedSpeechPayload({ text: 'Hello', cached: true }, again, saved), null);
+  assert.equal(reusedSpeechPayload({ text: 'Hello' }, first, saved), null);
 });
 
 test('a different line, voice, provider model, or saved model is a new clip', () => {

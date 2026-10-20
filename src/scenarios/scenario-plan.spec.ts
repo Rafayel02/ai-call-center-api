@@ -113,6 +113,65 @@ test('the loop sees the topics of the switch ahead', () => {
   assert.equal(topicsAhead(callGraph(), 'hours-line'), null);
 });
 
+/** Start → loop → closing; No more questions → switch, Still has questions → `questions`. */
+function closingGraph(options: { closing?: Record<string, unknown>; againTo?: string } = {}) {
+  const full = callGraph();
+  const again = options.againTo
+    ? {
+        nodes: [
+          { id: 'again-1', type: 'tts', position: { x: 0, y: 0 }, data: { modelId: TTS, text: 'Sure.' } },
+          { id: 'again-2', type: 'tts', position: { x: 0, y: 0 }, data: { modelId: TTS, text: 'Go ahead.' } },
+        ],
+        edges: [
+          { id: 'e12', source: 'again-1', target: 'again-2' },
+          { id: 'e13', source: 'again-2', target: options.againTo },
+        ],
+      }
+    : { nodes: [], edges: [] };
+  return parseScenarioGraph({
+    nodes: [
+      ...full.nodes.filter((node) => node.id !== 'menu'),
+      {
+        id: 'closing',
+        type: 'closing',
+        position: { x: 0, y: 0 },
+        data: { sttModelId: STT, ttsModelId: TTS, llmModelId: LLM, text: 'Anything else?', ...options.closing },
+      },
+      ...again.nodes,
+    ],
+    edges: [
+      { id: 'e1', source: 'start', target: 'greet' },
+      ...full.edges.filter((edge) => edge.source !== 'start' && edge.source !== 'menu' && edge.source !== 'loop'),
+      { id: 'e9', source: 'loop', target: 'closing' },
+      { id: 'e10', source: 'closing', sourceHandle: 'questions', target: options.againTo ? 'again-1' : 'loop' },
+      { id: 'e11', source: 'closing', sourceHandle: 'done', target: 'switch' },
+      ...again.edges,
+    ],
+  });
+}
+
+test('a closing step can send the caller back to the loop, and the loop sees the topics past it', () => {
+  assert.deepEqual(planScenario(closingGraph(), enabled), { ok: true });
+  assert.deepEqual(planScenario(closingGraph({ againTo: 'loop' }), enabled), { ok: true });
+  assert.deepEqual(topicsAhead(closingGraph(), 'loop'), {
+    defaultTopicId: 'default',
+    topics: [{ id: 'hours', description: 'Working hours' }],
+  });
+  assert.ok(fixedLines(closingGraph()).some((line) => line.text === 'Anything else?' && line.modelId === TTS));
+});
+
+test('a closing step without its models cannot run, and a loop that skips it is still refused', () => {
+  assert.deepEqual(planScenario(closingGraph({ closing: { llmModelId: null } }), enabled), {
+    ok: false,
+    message: 'Choose an LLM for each closing step.',
+  });
+  assert.deepEqual(planScenario(closingGraph({ closing: { sttModelId: '44444444-4444-4444-8444-444444444444' } }), enabled), {
+    ok: false,
+    message: 'A closing step uses a speech-to-text model that is no longer available.',
+  });
+  assert.deepEqual(planScenario(closingGraph({ againTo: 'again-1' }), enabled), { ok: false, message: 'The scenario loops back to an earlier step.' });
+});
+
 test('fixed lines cover steps, menu prompts, delay lines, and sorry lines once each', () => {
   const lines = fixedLines(callGraph({ loop: { fillers: ['One moment.', 'Hello.'] } })).map((line) => line.text);
   assert.deepEqual(lines.sort(), ['For Armenian press 1.', 'Hello.', 'One moment.', 'Sorry, an operator will call you back.', 'We open at nine.']);

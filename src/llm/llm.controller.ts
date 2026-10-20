@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, UseGu
 import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AuthUser, CurrentUser } from '../common/decorators/current-user.decorator';
-import { CompleteTurnDto, CreateLlmModelDto, RouteCallDto, TestLlmDraftDto, UpdateLlmModelDto } from './dto/llm-model.dto';
+import { ClosingCallDto, CompleteTurnDto, CreateLlmModelDto, RouteCallDto, TestLlmDraftDto, UpdateLlmModelDto } from './dto/llm-model.dto';
 import { LlmService } from './llm.service';
 
 @Controller('llm-models')
@@ -60,5 +60,11 @@ export class LlmController {
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   route(@Param('id', ParseUUIDPipe) id: string, @Body() dto: RouteCallDto) {
     return this.models.route(id, dto);
+  }
+
+  @Post(':id/closing')
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  closing(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ClosingCallDto) {
+    return this.models.judgeClosing(id, dto);
   }
 }

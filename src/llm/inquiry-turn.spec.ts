@@ -30,6 +30,18 @@ test('the system prompt keeps earlier lines in mind and notes an interruption', 
   assert.match(prompt, /The caller spoke again before you answered/);
 });
 
+test('a return from closing asks for the question, or accepts a stated one without answering it', () => {
+  const prompt = inquirySystemPrompt(undefined, undefined, undefined, true);
+  assert.match(prompt, /ask what question they have/);
+  assert.match(prompt, /You do not answer it/);
+  assert.match(prompt, /reply must be an empty string/);
+  assert.doesNotMatch(prompt, /answer that question in reply/);
+  const turn = readInquiryTurn({ reply: 'The office is on Main Street.', inquiry: 'the office location', phase: 'accepted' });
+  assert.equal(turn.reply, '');
+  assert.equal(turn.inquiry, 'the office location');
+  assert.equal(turn.phase, 'accepted');
+});
+
 test('the system prompt includes the topics the call can be routed to', () => {
   const prompt = inquirySystemPrompt(undefined, [{ id: 'hours', description: 'User asks for working hours' }], 'default');
   assert.match(prompt, /Do not give the address/);

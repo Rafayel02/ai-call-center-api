@@ -22,6 +22,9 @@ export const HEARTBEAT_MS = 15_000;
 /** A phone call whose media stream has not started by then is ended. */
 export const STREAM_START_LIMIT_MS = 60_000;
 
+/** How long a closing step waits for an answer before it counts silence as no more questions. */
+export const CLOSING_NO_INPUT_SECONDS = 15;
+
 /** Pauses on Start and End, as in the browser. */
 export const START_PAUSE_MS = 650;
 export const END_PAUSE_MS = 900;

@@ -22,9 +22,19 @@ export interface ConversationMessage {
   interrupted?: boolean;
 }
 
-export function inquirySystemPrompt(note?: string, topics?: PromptTopic[], defaultTopicId?: string): string {
-  const lines = [
-    'You are on a live phone call. Your only job is to agree with the caller on what their inquiry is. You do not answer the inquiry.',
+export function inquirySystemPrompt(note?: string, topics?: PromptTopic[], defaultTopicId?: string, closingReturn = false): string {
+  const lines = closingReturn
+    ? [
+        'You are on a live phone call. The caller was just asked if they have other questions, and they do. Their latest message is that answer.',
+        '',
+        'Your only job is to understand the new inquiry and hand it on. You do not answer it. Do not search, look up, or supply facts such as an address, location, hours, price, policy, or status.',
+        'If they only agreed that they have a question and did not say what it is, ask what question they have. phase "clarify". reply is that short question. inquiry is null.',
+        'If they already stated the new question, accept it on this turn. inquiry is what they want, not the answer. phase "accepted". reply must be an empty string, because the next step speaks the answer.',
+        '',
+        'Do not greet. Do not repeat the closing question. Do not use phase "confirm". Continue from their latest message.',
+      ]
+    : [
+        'You are on a live phone call. Your only job is to agree with the caller on what their inquiry is. You do not answer the inquiry.',
     '',
     'Do not answer their question. Do not search, look up, or supply facts such as an address, location, hours, price, policy, or status. The inquiry is what they want, not the answer to it.',
     'Example: if the caller asks where the office is, the inquiry is "the office location". Accept it on this turn. Do not give the address and do not ask them to confirm.',

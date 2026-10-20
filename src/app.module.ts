@@ -7,6 +7,7 @@ import { CallsModule } from './calls/calls.module';
 import { DatasetModule } from './dataset/dataset.module';
 import { HealthModule } from './health/health.module';
 import { LlmModule } from './llm/llm.module';
+import { ModelPricingModule } from './model-pricing/model-pricing.module';
 import { OrganizationsModule } from './organizations/organizations.module';
 import { PhoneNumbersModule } from './phone-numbers/phone-numbers.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -29,6 +30,7 @@ import { UsersModule } from './users/users.module';
     SpeechToTextComparisonModule,
     TextToSpeechModule,
     LlmModule,
+    ModelPricingModule,
     DatasetModule,
     OrganizationsModule,
     ScenariosModule,

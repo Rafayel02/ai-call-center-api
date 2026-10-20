@@ -1,4 +1,4 @@
-import { branchHandles, ScenarioGraph, ScenarioGraphNode, LoopNodeData } from './scenario-graph';
+import { branchHandles, ClosingNodeData, ScenarioGraph, ScenarioGraphNode, LoopNodeData } from './scenario-graph';
 
 /** Whether each saved model a graph uses exists, and if so whether it is enabled. */
 export interface ModelAvailability {
@@ -54,19 +54,32 @@ function stepProblem(node: ScenarioGraphNode, models: ModelAvailability): string
     }
     if (node.data.options.some((option) => !option.label)) return 'Name each menu option.';
   }
+  if (node.type === 'closing') {
+    const data: ClosingNodeData = node.data;
+    if (!data.sttModelId) return 'Choose a speech-to-text model for each closing step.';
+    if (!data.ttsModelId) return 'Choose a text-to-speech model for each closing step.';
+    if (!data.llmModelId) return 'Choose an LLM for each closing step.';
+    if (!data.text.trim()) return 'Each closing step needs a question.';
+    return (
+      modelProblem(models.stt, data.sttModelId, 'A closing step uses a speech-to-text model that is no longer available.', 'Enable the speech-to-text model used by each closing step.') ??
+      modelProblem(models.tts, data.ttsModelId, 'A closing step uses a text-to-speech model that is no longer available.', 'Enable the speech model used by each closing step.') ??
+      modelProblem(models.llm, data.llmModelId, 'A closing step uses an LLM that is no longer available.', 'Enable the LLM used by each closing step.')
+    );
+  }
   return null;
 }
 
 /**
  * Checks that a call can run the graph from Start to End: the rules the designer's Play used, plus the Keypad menu
- * and the sorry line. Returns the first problem found.
+ * and the sorry line. Returns the first problem found. The only way back to an earlier step is a closing step's
+ * Still has questions, which may return to any step before that closing step.
  */
 export function planScenario(graph: ScenarioGraph, models: ModelAvailability): ScenarioPlan {
   const start = graph.nodes.find((node) => node.type === 'start');
   if (!start) return { ok: false, message: 'Add a Start step.' };
 
-  const visit = (nodeId: string, seen: Set<string>, hasLlm: boolean): string | null => {
-    if (seen.has(nodeId)) return 'The scenario loops back to an earlier step.';
+  const visit = (nodeId: string, seen: Set<string>, hasLlm: boolean, returnTo: ReadonlySet<string> | null): string | null => {
+    if (seen.has(nodeId)) return returnTo?.has(nodeId) ? null : 'The scenario loops back to an earlier step.';
     const node = graph.nodes.find((item) => item.id === nodeId);
     if (!node) return 'A connection points at a missing step.';
     if (node.type === 'end') return null;
@@ -78,12 +91,20 @@ export function planScenario(graph: ScenarioGraph, models: ModelAvailability): S
     if (node.type === 'loop') hasLlm = Boolean(node.data.llmModelId);
     if (node.type === 'switch' && !hasLlm) return 'Put a conversational loop with an LLM before the topic switch.';
 
+    if (node.type === 'closing') {
+      const questions = branchTarget(graph, node.id, 'questions');
+      const done = branchTarget(graph, node.id, 'done');
+      if (!questions) return 'Connect Still has questions.';
+      if (!done) return 'Connect No more questions through to End.';
+      return visit(questions, nextSeen, hasLlm, nextSeen) ?? visit(done, nextSeen, hasLlm, returnTo);
+    }
+
     const handles = branchHandles(node);
     if (handles) {
       for (const handle of handles) {
         const target = branchTarget(graph, node.id, handle);
         if (!target) return node.type === 'menu' ? 'Connect every menu option through to End.' : 'Connect every topic through to End.';
-        const branchProblem = visit(target, nextSeen, hasLlm);
+        const branchProblem = visit(target, nextSeen, hasLlm, returnTo);
         if (branchProblem) return branchProblem;
       }
       return null;
@@ -92,10 +113,10 @@ export function planScenario(graph: ScenarioGraph, models: ModelAvailability): S
     const outgoing = graph.edges.filter((edge) => edge.source === nodeId);
     if (outgoing.length === 0) return 'Connect the steps from Start through to End.';
     if (outgoing.length > 1) return 'A step can lead to only one next step.';
-    return visit(outgoing[0].target, nextSeen, hasLlm);
+    return visit(outgoing[0].target, nextSeen, hasLlm, returnTo);
   };
 
-  const problem = visit(start.id, new Set(), false);
+  const problem = visit(start.id, new Set(), false, null);
   return problem ? { ok: false, message: problem } : { ok: true };
 }
 
@@ -111,13 +132,18 @@ export function nextStep(graph: ScenarioGraph, nodeId: string): ScenarioGraphNod
   return graph.nodes.find((node) => node.id === outgoing[0].target) ?? null;
 }
 
-/** The topics of the first Topic switch after a loop, following single next steps only. */
+/** The topics of the first Topic switch after a loop, following single next steps and a closing step's No more questions only. */
 export function topicsAhead(graph: ScenarioGraph, fromId: string): LoopTopics | null {
   const seen = new Set<string>([fromId]);
   let current = nextStep(graph, fromId);
   while (current && !seen.has(current.id)) {
     seen.add(current.id);
     if (current.type === 'end') return null;
+    if (current.type === 'closing') {
+      const done = branchTarget(graph, current.id, 'done');
+      current = done ? (graph.nodes.find((node) => node.id === done) ?? null) : null;
+      continue;
+    }
     if (current.type === 'switch') {
       const fallback = current.data.topics.find((topic) => topic.isDefault);
       const described = current.data.topics.filter((topic) => !topic.isDefault && topic.description);
@@ -161,6 +187,7 @@ export function fixedLines(graph: ScenarioGraph): FixedLine[] {
       for (const filler of node.data.fillers) add(node.data.ttsModelId, filler);
       add(node.data.ttsModelId, node.data.sorryLine);
     }
+    if (node.type === 'closing') add(node.data.ttsModelId, node.data.text);
   }
   return [...lines.values()];
 }
@@ -173,7 +200,7 @@ export function graphModelIds(graph: ScenarioGraph) {
   for (const node of graph.nodes) {
     if (node.type === 'tts' && node.data.modelId) tts.add(node.data.modelId);
     if (node.type === 'menu') for (const prompt of node.data.prompts) if (prompt.ttsModelId) tts.add(prompt.ttsModelId);
-    if (node.type === 'loop') {
+    if (node.type === 'loop' || node.type === 'closing') {
       if (node.data.ttsModelId) tts.add(node.data.ttsModelId);
       if (node.data.sttModelId) stt.add(node.data.sttModelId);
       if (node.data.llmModelId) llm.add(node.data.llmModelId);

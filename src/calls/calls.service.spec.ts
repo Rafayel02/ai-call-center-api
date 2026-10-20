@@ -14,7 +14,9 @@ import { WebSocket } from 'ws';
 import { encodeUlaw, ULAW_SILENCE } from '../common/audio/ulaw';
 import { LlmService } from '../llm/llm.service';
 import { ProviderRegistry as LlmRegistry } from '../llm/providers/provider.registry';
+import { ModelPricingService } from '../model-pricing/model-pricing.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { PriceCatalog } from '../scenario-executions/execution-price';
 import { ScenarioExecutionsService, STALE_MESSAGE } from '../scenario-executions/scenario-executions.service';
 import { ScenariosService } from '../scenarios/scenarios.service';
 import { ProviderRegistry as SttRegistry } from '../speech-to-text/providers/provider.registry';
@@ -58,14 +60,26 @@ const llmProvider = {
       trace: { systemPrompt: 'prompt', messages: [], raw: {}, usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 }, latencyMs: 3 },
     };
   },
+  async judgeClosing() {
+    return {
+      outcome: 'done' as const,
+      trace: { systemPrompt: 'closing', messages: [], raw: {}, usage: { promptTokens: 8, completionTokens: 2, totalTokens: 10 }, latencyMs: 2 },
+    };
+  },
 };
 const registry = (provider: unknown) => ({ get: () => provider, list: () => [] });
 
 process.env.CALL_TOKEN_SECRET = 'a-long-random-secret-for-the-call-tests';
 process.env.TWILIO_AUTH_TOKEN = TWILIO_TOKEN;
 const config = new ConfigService();
-const executions = new ScenarioExecutionsService(prisma);
-const textToSpeech = new TextToSpeechService(prisma, registry(ttsProvider) as unknown as TtsProviderRegistry, executions);
+const catalog: PriceCatalog = {
+  openai: { 'gpt-4o-mini': { inputPerMillion: 0.15, outputPerMillion: 0.6 } },
+  elevenlabs: { eleven_v3: { usd: 0.1, unit: '1k_characters' }, scribe_v1: { usd: 0.4, unit: 'hour' } },
+  hispeech: null,
+};
+const pricing = { rates: async () => catalog } as unknown as ModelPricingService;
+const executions = new ScenarioExecutionsService(prisma, pricing);
+const textToSpeech = new TextToSpeechService(prisma, registry(ttsProvider) as unknown as TtsProviderRegistry, executions, pricing);
 const scenarios = new ScenariosService(prisma, textToSpeech);
 const records = new CallRecordsService(prisma, executions);
 const calls = new CallsService(
@@ -275,6 +289,10 @@ test('a browser call runs on the server and is recorded as an execution', async 
       ['agent', 'step', 'We open at nine.'],
     ],
   );
+
+  assert.equal(execution.priceComplete, true, 'every provider call of a server call is priced');
+  assert.ok((execution.priceUsd ?? 0) > 0);
+  assert.ok(execution.segments.find((segment) => segment.speaker === 'caller')?.prices.some((price) => price.component === 'speechToText'));
 
   const audio = await prisma.scenarioExecutionAudio.findMany({ where: { executionId: started.executionId }, select: { kind: true, mimeType: true } });
   assert.deepEqual([...new Set(audio.map((row) => row.kind))].sort(), ['CALLER', 'MIX', 'TTS', 'UTTERANCE']);
