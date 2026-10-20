@@ -59,6 +59,7 @@ export class PhoneScenarioSession {
   private listeningForDigit = false;
   private pendingDigit: string | null = null;
   private digitWait: ((digit: string | null) => void) | null = null;
+  private hangupCall: (() => Promise<void>) | null = null;
   private readonly tones = new DtmfDecoder((digit) => this.takeDigit(digit));
 
   constructor(
@@ -113,6 +114,10 @@ export class PhoneScenarioSession {
     this.digitWait?.(null);
   }
 
+  prepareHangup(hangup: () => Promise<void>) {
+    this.hangupCall = hangup;
+  }
+
   async run() {
     try {
       await this.chooseLanguage();
@@ -146,6 +151,7 @@ export class PhoneScenarioSession {
       }
     } finally {
       this.reachedEnd = !this.closed;
+      await this.hangupCall?.();
       if (this.socket.readyState === WebSocket.OPEN) this.socket.close(1000, 'Call ended.');
     }
   }

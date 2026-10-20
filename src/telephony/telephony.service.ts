@@ -118,6 +118,7 @@ export class TelephonyService {
     const claimed = await this.claim(socket);
     if (!claimed) return;
     const { session, pending } = claimed;
+    session.prepareHangup(() => this.endCall(pending.callSid));
     socket.on('message', (data) => session.receive(String(data)));
     socket.on('close', () => session.hangUp());
     const log = await this.openLog(pending);
@@ -129,8 +130,6 @@ export class TelephonyService {
     } catch (error) {
       this.logger.warn(`Phone scenario failed: ${error instanceof Error ? error.message : 'unknown error'}`);
       await log.finish(ExecutionStatus.FAILED, error instanceof Error ? error.message : 'The call failed.');
-    } finally {
-      await this.endCall(pending.callSid);
     }
   }
 
@@ -249,16 +248,21 @@ export class TelephonyService {
   private async endCall(callSid: string) {
     try {
       const accounts = await this.streaming.credentials();
+      const hangup = '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>';
       for (const account of accounts) {
-        const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(account.accountSid)}/Calls/${encodeURIComponent(callSid)}.json`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Basic ${Buffer.from(`${account.accountSid}:${account.authToken}`).toString('base64')}`,
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body: new URLSearchParams({ Status: 'completed' }),
-        });
-        if (response.ok) return;
+        const url = `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(account.accountSid)}/Calls/${encodeURIComponent(callSid)}.json`;
+        const headers = {
+          Authorization: `Basic ${Buffer.from(`${account.accountSid}:${account.authToken}`).toString('base64')}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        };
+        const redirected = await fetch(url, { method: 'POST', headers, body: new URLSearchParams({ Twiml: hangup }) });
+        if (redirected.ok) return;
+        const redirectDetail = (await redirected.text()).slice(0, 180);
+        this.logger.warn(`Twilio did not redirect the call to hang up (${redirected.status}): ${redirectDetail}`);
+        const completed = await fetch(url, { method: 'POST', headers, body: new URLSearchParams({ Status: 'completed' }) });
+        if (completed.ok) return;
+        const completedDetail = (await completed.text()).slice(0, 180);
+        this.logger.warn(`Twilio did not complete the call (${completed.status}): ${completedDetail}`);
       }
     } catch (error) {
       this.logger.warn(`Could not end the phone call: ${error instanceof Error ? error.message : 'unknown error'}`);
