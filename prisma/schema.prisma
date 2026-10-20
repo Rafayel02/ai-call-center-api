@@ -281,6 +281,7 @@ model TextToSpeechClip {
   audio           Bytes
   mimeType        String            @map("mime_type")
   byteSize        Int               @map("byte_size")
+  phoneAudio      Bytes?            @map("phone_audio")
   priceUsd        Decimal?          @map("price_usd") @db.Decimal(12, 6)
   createdAt       DateTime          @default(now()) @map("created_at")
 

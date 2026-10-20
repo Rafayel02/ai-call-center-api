@@ -127,7 +127,7 @@ export class TextToSpeechService {
     }));
   }
 
-  /** Raw 8 kHz μ-law for a live phone call. It is not the cached mp3 clip. */
+  /** Raw 8 kHz μ-law for a live phone call. A line already saved for Play costs nothing again. */
   async speakPhone(id: string, text: string, execution: ExecutionContext | null = null): Promise<Buffer> {
     const spoken = text.trim();
     if (!spoken) throw new BadRequestException('Enter the text to speak.');
@@ -136,24 +136,30 @@ export class TextToSpeechService {
     const provider = this.providers.get(model.provider);
     const config = model.config as Record<string, unknown>;
     const identity = provider.toPublic(config);
+    const providerModelId = typeof identity.modelId === 'string' ? identity.modelId : '';
+    const voiceId = typeof identity.voiceId === 'string' ? identity.voiceId : '';
     const snapshot = {
       modelId: model.id,
       modelName: model.name,
       provider: model.provider,
-      providerModel: typeof identity.modelId === 'string' ? identity.modelId : '',
-      voiceId: typeof identity.voiceId === 'string' ? identity.voiceId : '',
+      providerModel: providerModelId,
+      voiceId,
       voiceName: typeof identity.voiceName === 'string' ? identity.voiceName : '',
     };
+    const reusable = execution?.ttsKind === 'step' || execution?.ttsKind === 'delay';
     const started = Date.now();
     try {
-      const audio = await provider.speak(config, spoken, 'ulaw_8000');
+      const clip = reusable && providerModelId && voiceId ? await this.phoneClip(model.id, providerModelId, voiceId, spoken) : null;
+      const audio = clip?.phoneAudio?.length ? Buffer.from(clip.phoneAudio) : await provider.speak(config, spoken, 'ulaw_8000');
+      if (clip && !clip.phoneAudio?.length) void this.storePhoneAudio(clip.id, audio);
+      if (!clip && reusable && providerModelId && voiceId) void this.storeFirstPhoneLine(model.id, provider, config, providerModelId, voiceId, spoken, audio);
       await this.executions.recordSpeech(execution, {
         model: snapshot,
         text: spoken,
         latencyMs: Date.now() - started,
         audio,
         mimeType: 'audio/basic',
-        cached: false,
+        cached: Boolean(clip),
       });
       return audio;
     } catch (error) {
@@ -208,6 +214,43 @@ export class TextToSpeechService {
         error: error instanceof Error ? error.message : 'Speech failed.',
       });
       throw error;
+    }
+  }
+
+  private phoneClip(modelId: string, providerModelId: string, voiceId: string, spoken: string) {
+    return this.prisma.textToSpeechClip.findUnique({
+      where: { cacheKey: speechClipKey({ modelId, providerModelId, voiceId, text: spoken }) },
+      select: { id: true, phoneAudio: true },
+    });
+  }
+
+  private async storePhoneAudio(id: string, audio: Buffer) {
+    try {
+      await this.prisma.textToSpeechClip.updateMany({
+        where: { id, phoneAudio: null },
+        data: { phoneAudio: Uint8Array.from(audio) },
+      });
+    } catch (error) {
+      this.logger.warn(`Could not store phone speech for clip ${id}: ${error instanceof Error ? error.message : 'unknown error'}`);
+    }
+  }
+
+  /** The first phone play of a fixed line becomes the saved clip, and later plays are free. */
+  private async storeFirstPhoneLine(
+    modelId: string,
+    provider: TextToSpeechProvider,
+    config: Record<string, unknown>,
+    providerModelId: string,
+    voiceId: string,
+    spoken: string,
+    phoneAudio: Buffer,
+  ) {
+    try {
+      await this.loadOrCreateClip(modelId, provider, config, providerModelId, voiceId, spoken);
+      const clip = await this.phoneClip(modelId, providerModelId, voiceId, spoken);
+      if (clip) await this.storePhoneAudio(clip.id, phoneAudio);
+    } catch (error) {
+      this.logger.warn(`Could not store the first phone speech line: ${error instanceof Error ? error.message : 'unknown error'}`);
     }
   }
 
