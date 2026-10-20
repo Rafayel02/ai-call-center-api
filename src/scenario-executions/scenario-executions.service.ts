@@ -5,7 +5,7 @@ import { ModelPricingService } from '../model-pricing/model-pricing.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateScenarioExecutionDto, ExecutionEventDto, FinishScenarioExecutionDto } from './dto/scenario-execution.dto';
 import { ExecutionContext } from './execution-context';
-import { priceExecution } from './execution-price';
+import { highlightPrices, priceExecution, readPriceParts } from './execution-price';
 import { speechSegments } from './speech-segments';
 
 export const MAX_EXECUTION_AUDIO_BYTES = 30 * 1024 * 1024;
@@ -43,6 +43,7 @@ const summarySelect = {
   errorMessage: true,
   priceUsd: true,
   priceComplete: true,
+  priceParts: true,
   startedBy: { select: { email: true } },
   audio: { where: { kind: ExecutionAudioKind.MIX }, select: { id: true } },
 } satisfies Prisma.ScenarioExecutionSelect;
@@ -331,12 +332,14 @@ export class ScenarioExecutionsService implements OnModuleInit {
     });
     if (!row) throw new NotFoundException('Execution not found.');
     const events = row.events.map((event) => this.presentEvent(event, row.id));
+    const segments = speechSegments(row.events.map((event) => ({ id: event.id, type: event.type, offsetMs: event.offsetMs, payload: event.payload })));
+    const prices = highlightPrices(segments, row.events, readPriceParts(row.priceParts));
     return {
       ...this.present({ ...row, audio: row.audio.filter((item) => item.kind === ExecutionAudioKind.MIX) }),
       topicId: row.topicId,
       graph: row.graph,
       peaks: this.presentPeaks(row.peaks),
-      segments: speechSegments(row.events.map((event) => ({ id: event.id, type: event.type, offsetMs: event.offsetMs, payload: event.payload }))),
+      segments: segments.map((segment) => ({ ...segment, prices: prices[segment.eventId] ?? [] })),
       events,
     };
   }
@@ -637,11 +640,11 @@ export class ScenarioExecutionsService implements OnModuleInit {
     if (ids && ids.length === 0) return;
     const rows = await this.prisma.scenarioExecution.findMany({
       where: {
-        priceUsd: null,
         status: { not: ExecutionStatus.RUNNING },
         ...(ids ? { id: { in: ids } } : {}),
+        OR: [{ priceUsd: null }, { priceParts: { equals: Prisma.DbNull } }],
       },
-      select: { id: true, events: { select: { type: true, payload: true } } },
+      select: { id: true, priceUsd: true, events: { select: { id: true, type: true, payload: true } } },
     });
     if (rows.length === 0) return;
     const catalog = await this.pricing.rates();
@@ -650,8 +653,11 @@ export class ScenarioExecutionsService implements OnModuleInit {
       const quote = priceExecution(row.events, catalog);
       if (!quote.persist) continue;
       const updated = await this.prisma.scenarioExecution.updateMany({
-        where: { id: row.id, priceUsd: null },
-        data: { priceUsd: quote.usd.toFixed(6), priceComplete: quote.complete },
+        where: { id: row.id, OR: [{ priceUsd: null }, { priceParts: { equals: Prisma.DbNull } }] },
+        data: {
+          ...(row.priceUsd == null ? { priceUsd: quote.usd.toFixed(6), priceComplete: quote.complete } : {}),
+          priceParts: quote.parts as unknown as Prisma.InputJsonValue,
+        },
       });
       stored += updated.count;
     }
@@ -696,6 +702,7 @@ export class ScenarioExecutionsService implements OnModuleInit {
       errorMessage: row.errorMessage,
       priceUsd: row.priceUsd == null ? null : Number(row.priceUsd.toString()),
       priceComplete: row.priceComplete,
+      priceParts: totalsOf(row.priceParts),
       startedBy: { email: row.startedBy.email },
       hasMix: row.audio.length > 0,
     };
@@ -718,4 +725,10 @@ export class ScenarioExecutionsService implements OnModuleInit {
         : payload,
     };
   }
+}
+
+function totalsOf(value: Prisma.JsonValue) {
+  const parts = readPriceParts(value);
+  if (!parts) return null;
+  return { speechToText: parts.speechToText, textToSpeech: parts.textToSpeech, model: parts.model };
 }

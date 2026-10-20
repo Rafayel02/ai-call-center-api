@@ -113,6 +113,7 @@ model ScenarioExecution {
   errorMessage   String?         @map("error_message")
   priceUsd       Decimal?        @map("price_usd") @db.Decimal(12, 6)
   priceComplete  Boolean         @default(false) @map("price_complete")
+  priceParts     Json?           @map("price_parts")
   graph          Json
   peaks          Json?
   callerMime     String?         @map("caller_mime")
