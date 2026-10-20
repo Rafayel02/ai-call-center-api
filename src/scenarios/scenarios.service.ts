@@ -96,10 +96,6 @@ export class ScenariosService {
       const scenario = await this.prisma.scenario.findUnique({ where: { id }, select: { graph: true } });
       if (!scenario) throw new NotFoundException('Scenario not found.');
       await this.preparePublished(readScenarioGraph(scenario.graph));
-    } else {
-      // A number must always reach a published scenario.
-      const number = await this.prisma.phoneNumber.findFirst({ where: { scenarioId: id }, select: { e164: true } });
-      if (number) throw new BadRequestException(`Move ${number.e164} to another scenario first.`);
     }
     try {
       return await this.prisma.scenario.update({

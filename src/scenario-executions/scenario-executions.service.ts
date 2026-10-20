@@ -1,7 +1,9 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { CallbackReason, CallEndReason, ExecutionAudioKind, ExecutionChannel, ExecutionStatus, Prisma } from '@prisma/client';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ExecutionAudioKind, ExecutionChannel, ExecutionStatus, Prisma } from '@prisma/client';
 import { ulawToWav, wavDurationMs } from '../common/audio/wav';
+import { inquirySystemPrompt, PromptTopic } from '../llm/inquiry-turn';
 import { PrismaService } from '../prisma/prisma.service';
+import { CreateScenarioExecutionDto, ExecutionEventDto, FinishScenarioExecutionDto } from './dto/scenario-execution.dto';
 import { ExecutionContext } from './execution-context';
 import { speechSegments } from './speech-segments';
 
@@ -10,6 +12,20 @@ const STALE_MS = 2 * 60 * 1000;
 export const STALE_MESSAGE = 'The call stopped reporting.';
 const PEAKS = 240;
 const MP3_BITRATE = 128_000;
+
+const BROWSER_EVENTS = new Set([
+  'microphone.opened',
+  'microphone.denied',
+  'node.entered',
+  'node.left',
+  'tts.played',
+  'barge_in',
+  'turn.counted',
+  'inquiry.accepted',
+  'switch.routed',
+  'execution.ended',
+  'llm.aborted',
+]);
 
 const SECRET_KEY = /^(apiKey|api_key|authorization|password|secret|accessToken|refreshToken|xi-api-key)$/i;
 
@@ -28,16 +44,6 @@ const summarySelect = {
   menuChoice: true,
   startedBy: { select: { email: true } },
   audio: { where: { kind: ExecutionAudioKind.MIX }, select: { id: true } },
-  call: {
-    select: {
-      fromNumber: true,
-      toNumber: true,
-      endReason: true,
-      callbackReason: true,
-      calledBackAt: true,
-      calledBackBy: { select: { email: true } },
-    },
-  },
 } satisfies Prisma.ScenarioExecutionSelect;
 
 /** One event the call session writes. The session numbers them itself. */
@@ -106,11 +112,41 @@ function blankToNull(value?: string | null) {
   return trimmed ? trimmed : null;
 }
 
-export function encodeCursor(startedAt: Date, id: string) {
+function topicsOf(value: unknown): PromptTopic[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const topics: PromptTopic[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') return undefined;
+    const row = item as { id?: unknown; description?: unknown };
+    if (typeof row.id !== 'string' || typeof row.description !== 'string') return undefined;
+    topics.push({ id: row.id, description: row.description });
+  }
+  return topics;
+}
+
+function annotateMessages(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const row = item as { role?: unknown; content?: unknown; interrupted?: unknown };
+    if (typeof row.role !== 'string' || typeof row.content !== 'string') return [];
+    return [
+      {
+        role: row.role,
+        content:
+          row.interrupted === true
+            ? `${row.content}\n[interrupted: the caller spoke over this and may not have heard it fully]`
+            : row.content,
+      },
+    ];
+  });
+}
+
+function encodeCursor(startedAt: Date, id: string) {
   return Buffer.from(`${startedAt.toISOString()}|${id}`).toString('base64url');
 }
 
-export function decodeCursor(cursor: string) {
+function decodeCursor(cursor: string) {
   try {
     const raw = Buffer.from(cursor, 'base64url').toString('utf8');
     const split = raw.lastIndexOf('|');
@@ -133,6 +169,33 @@ export class ScenarioExecutionsService {
   private readonly logger = new Logger(ScenarioExecutionsService.name);
 
   constructor(private readonly prisma: PrismaService) {}
+
+  async create(dto: CreateScenarioExecutionDto, userId: string) {
+    if (!Array.isArray(dto.graph.nodes) || !Array.isArray(dto.graph.edges)) {
+      throw new BadRequestException('The scenario graph is incomplete.');
+    }
+    const scenario = await this.prisma.scenario.findUnique({ where: { id: dto.scenarioId }, select: { id: true } });
+    if (!scenario) throw new NotFoundException('Scenario not found.');
+    try {
+      const row = await this.prisma.scenarioExecution.create({
+        data: {
+          id: dto.id,
+          scenarioId: dto.scenarioId,
+          startedById: userId,
+          graph: dto.graph as Prisma.InputJsonValue,
+        },
+        select: summarySelect,
+      });
+      return this.present(row);
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        const existing = await this.prisma.scenarioExecution.findUnique({ where: { id: dto.id }, select: summarySelect });
+        if (existing?.scenarioId === dto.scenarioId) return this.present(existing);
+        throw new ConflictException('This execution id is already in use.');
+      }
+      throw error;
+    }
+  }
 
   /** Creates the execution for a call the session runs. The API chooses the id. */
   async startSession(input: { scenarioId: string; graph: unknown; channel: ExecutionChannel; startedById: string | null }) {
@@ -210,6 +273,104 @@ export class ScenarioExecutionsService {
     });
   }
 
+  async addEvents(id: string, events: ExecutionEventDto[]) {
+    await this.findOrThrow(id);
+    if (events.some((event) => !BROWSER_EVENTS.has(event.type))) {
+      throw new BadRequestException('Unknown event type.');
+    }
+    const stored = [];
+    for (const event of events) {
+      const payload = (event.type === 'llm.aborted' ? this.enrichAbort(event.payload) : scrub(event.payload)) as Prisma.InputJsonValue;
+      const row = await this.prisma.scenarioExecutionEvent.upsert({
+        where: { executionId_clientSeq: { executionId: id, clientSeq: event.clientSeq } },
+        create: {
+          executionId: id,
+          clientSeq: event.clientSeq,
+          offsetMs: event.offsetMs,
+          type: event.type,
+          nodeId: event.nodeId ?? null,
+          payload,
+        },
+        update: {
+          offsetMs: event.offsetMs,
+          type: event.type,
+          nodeId: event.nodeId ?? null,
+          payload,
+        },
+      });
+      stored.push(this.presentEvent(row, id));
+    }
+    await this.touch(id);
+    return stored;
+  }
+
+  async heartbeat(id: string) {
+    const updated = await this.prisma.scenarioExecution.updateMany({
+      where: { id, status: ExecutionStatus.RUNNING },
+      data: { lastActivityAt: new Date() },
+    });
+    if (updated.count === 0) await this.findOrThrow(id);
+    return { ok: true };
+  }
+
+  async finish(id: string, dto: FinishScenarioExecutionDto) {
+    const existing = await this.findOrThrow(id);
+    if (existing.status !== ExecutionStatus.RUNNING) return this.present(existing);
+    await this.prisma.scenarioExecution.updateMany({
+      where: { id, status: ExecutionStatus.RUNNING },
+      data: {
+        status: dto.status,
+        durationMs: dto.durationMs,
+        inquiry: blankToNull(dto.inquiry),
+        topicId: blankToNull(dto.topicId),
+        topicLabel: blankToNull(dto.topicLabel),
+        errorMessage: blankToNull(dto.errorMessage),
+        endedAt: new Date(),
+        lastActivityAt: new Date(),
+      },
+    });
+    return this.present(await this.findOrThrow(id));
+  }
+
+  async saveAudio(id: string, files: { caller?: UploadFile[]; mix?: UploadFile[] }, peaksRaw?: string) {
+    await this.findOrThrow(id);
+    const caller = files.caller?.[0];
+    const mix = files.mix?.[0];
+    let callerStored = false;
+    let mixStored = false;
+    let rejected = false;
+    if (caller?.buffer?.length) {
+      if (this.rejectedFile(caller)) rejected = true;
+      else {
+        await this.upsertTrack(id, ExecutionAudioKind.CALLER, caller);
+        callerStored = true;
+      }
+    }
+    if (mix?.buffer?.length) {
+      if (this.rejectedFile(mix)) rejected = true;
+      else {
+        await this.upsertTrack(id, ExecutionAudioKind.MIX, mix);
+        mixStored = true;
+      }
+    }
+    const peaks = this.readPeaks(peaksRaw);
+    await this.prisma.scenarioExecution.update({
+      where: { id },
+      data: {
+        ...(peaks ? { peaks } : {}),
+        ...(callerStored ? { callerMime: caller?.mimetype || 'application/octet-stream' } : {}),
+        ...(mixStored ? { mixMime: mix?.mimetype || 'application/octet-stream' } : {}),
+        lastActivityAt: new Date(),
+      },
+    });
+    return {
+      ...this.present(await this.findOrThrow(id)),
+      callerStored,
+      mixStored,
+      ...(rejected ? { message: 'The recording could not be stored.' } : {}),
+    };
+  }
+
   async list(scenarioId: string, query: { status?: string; limit?: string; cursor?: string }) {
     const scenario = await this.prisma.scenario.findUnique({ where: { id: scenarioId }, select: { id: true } });
     if (!scenario) throw new NotFoundException('Scenario not found.');
@@ -248,7 +409,6 @@ export class ScenarioExecutionsService {
         startedBy: { select: { email: true } },
         audio: { select: { id: true, kind: true } },
         events: { orderBy: [{ offsetMs: 'asc' }, { clientSeq: 'asc' }] },
-        call: summarySelect.call,
       },
     });
     if (!row) throw new NotFoundException('Execution not found.');
@@ -488,6 +648,13 @@ export class ScenarioExecutionsService {
     await this.prisma.scenarioExecutionAudio.create({ data: { executionId, kind, ...data } });
   }
 
+  private rejectedFile(file: UploadFile) {
+    const size = file.size ?? file.buffer?.length ?? 0;
+    if (size > MAX_EXECUTION_AUDIO_BYTES) return true;
+    const mimeType = file.mimetype || 'application/octet-stream';
+    return !/^(audio\/|video\/|application\/octet-stream)/.test(mimeType);
+  }
+
   private readPeaks(raw?: string): Prisma.InputJsonValue | undefined {
     if (!raw?.trim()) return undefined;
     try {
@@ -521,11 +688,7 @@ export class ScenarioExecutionsService {
     return Math.min(100, parsed);
   }
 
-  /**
-   * Marks a running execution `FAILED` once nothing has reported for 2 minutes. A phone call's row is closed with it,
-   * marked for callback, because the caller was cut off.
-   */
-  async settleStale(scenarioId?: string, id?: string) {
+  private async settleStale(scenarioId?: string, id?: string) {
     const cutoff = new Date(Date.now() - STALE_MS);
     const stale = await this.prisma.scenarioExecution.findMany({
       where: {
@@ -536,7 +699,6 @@ export class ScenarioExecutionsService {
       },
       select: { id: true, startedAt: true, lastActivityAt: true },
     });
-    if (stale.length === 0) return;
     await Promise.all(
       stale.map((row) =>
         this.prisma.scenarioExecution.updateMany({
@@ -550,12 +712,12 @@ export class ScenarioExecutionsService {
         }),
       ),
     );
-    const executionId = { in: stale.map((row) => row.id) };
-    await this.prisma.call.updateMany({ where: { executionId, endReason: null, callbackReason: null }, data: { callbackReason: CallbackReason.ERROR } });
-    await this.prisma.call.updateMany({
-      where: { executionId, endReason: null },
-      data: { endReason: CallEndReason.ERROR, error: STALE_MESSAGE, endedAt: new Date() },
-    });
+  }
+
+  private async findOrThrow(id: string) {
+    const row = await this.prisma.scenarioExecution.findUnique({ where: { id }, select: summarySelect });
+    if (!row) throw new NotFoundException('Execution not found.');
+    return row;
   }
 
   private touch(id: string) {
@@ -563,6 +725,18 @@ export class ScenarioExecutionsService {
       where: { id },
       data: { lastActivityAt: new Date() },
     });
+  }
+
+  private enrichAbort(payload: Record<string, unknown>) {
+    const clean = asRecord(scrub(payload));
+    const note = typeof clean.note === 'string' ? clean.note : undefined;
+    const topics = topicsOf(clean.topics);
+    const defaultTopicId = typeof clean.defaultTopicId === 'string' ? clean.defaultTopicId : undefined;
+    return {
+      ...clean,
+      systemPrompt: inquirySystemPrompt(note, topics, defaultTopicId),
+      messages: annotateMessages(clean.messages),
+    };
   }
 
   private present(row: SummaryRow) {
@@ -580,16 +754,6 @@ export class ScenarioExecutionsService {
       menuChoice: row.menuChoice,
       startedBy: row.startedBy ? { email: row.startedBy.email } : null,
       hasMix: row.audio.length > 0,
-      call: row.call
-        ? {
-            fromNumber: row.call.fromNumber,
-            toNumber: row.call.toNumber,
-            endReason: row.call.endReason,
-            callbackReason: row.call.callbackReason,
-            calledBackAt: row.call.calledBackAt,
-            calledBackBy: row.call.calledBackBy ? { email: row.call.calledBackBy.email } : null,
-          }
-        : null,
     };
   }
 

@@ -6,12 +6,11 @@
   "scripts": {
     "build": "prisma generate && nest build",
     "start": "prisma migrate deploy && node dist/main.js",
-    "dev": "prisma migrate deploy && nest start --watch",
     "start:prod": "prisma migrate deploy && node dist/main.js",
     "lint": "tsc --noEmit --pretty false",
     "typecheck": "tsc --noEmit --pretty false",
     "test:db": "tsx scripts/test-db.ts",
-    "test": "tsx --test src/common/crypto/credential-cipher.spec.ts src/llm/inquiry-turn.spec.ts src/llm/topic-route.spec.ts src/scenarios/scenario-graph.spec.ts src/scenarios/scenario-plan.spec.ts src/calls/ear.spec.ts src/calls/call-recorder.spec.ts src/calls/call-session.spec.ts src/calls/call-token.spec.ts src/telephony/twilio-signature.spec.ts src/common/audio/audio.spec.ts src/scenario-executions/speech-segments.spec.ts src/text-to-speech/speech-clip.spec.ts src/speech-to-text-comparison/transcript-score.spec.ts"
+    "test": "tsx --test src/common/crypto/credential-cipher.spec.ts src/llm/inquiry-turn.spec.ts src/llm/topic-route.spec.ts src/scenarios/scenario-graph.spec.ts src/scenarios/scenario-plan.spec.ts src/calls/ear.spec.ts src/calls/call-recorder.spec.ts src/calls/call-session.spec.ts src/common/audio/audio.spec.ts src/scenario-executions/speech-segments.spec.ts src/text-to-speech/speech-clip.spec.ts src/speech-to-text-comparison/transcript-score.spec.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.6",

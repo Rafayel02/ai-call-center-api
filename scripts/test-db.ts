@@ -22,8 +22,7 @@ const env = { ...process.env, DATABASE_URL: url.toString() };
 
 try {
   execSync('npx prisma migrate deploy', { env, stdio: 'inherit' });
-  // One file at a time: every file empties the same tables, so files running side by side would wipe each other's rows.
-  execSync(`npx tsx --test --test-concurrency=1 ${TESTS.join(' ')}`, { env, stdio: 'inherit' });
+  execSync(`npx tsx --test ${TESTS.join(' ')}`, { env, stdio: 'inherit' });
 } catch {
   process.exit(1);
 }

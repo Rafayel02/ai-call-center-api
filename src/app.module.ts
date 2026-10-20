@@ -8,13 +8,11 @@ import { DatasetModule } from './dataset/dataset.module';
 import { HealthModule } from './health/health.module';
 import { LlmModule } from './llm/llm.module';
 import { OrganizationsModule } from './organizations/organizations.module';
-import { PhoneNumbersModule } from './phone-numbers/phone-numbers.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ScenarioExecutionsModule } from './scenario-executions/scenario-executions.module';
 import { ScenariosModule } from './scenarios/scenarios.module';
 import { SpeechToTextModule } from './speech-to-text/speech-to-text.module';
 import { SpeechToTextComparisonModule } from './speech-to-text-comparison/speech-to-text-comparison.module';
-import { TelephonyModule } from './telephony/telephony.module';
 import { TextToSpeechModule } from './text-to-speech/text-to-speech.module';
 import { UsersModule } from './users/users.module';
 
@@ -34,8 +32,6 @@ import { UsersModule } from './users/users.module';
     ScenariosModule,
     ScenarioExecutionsModule,
     CallsModule,
-    TelephonyModule,
-    PhoneNumbersModule,
     HealthModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

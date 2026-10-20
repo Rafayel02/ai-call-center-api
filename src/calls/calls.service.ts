@@ -1,37 +1,28 @@
 import { BadRequestException, BeforeApplicationShutdown, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { CallEndReason, ExecutionChannel } from '@prisma/client';
+import { ExecutionChannel } from '@prisma/client';
 import { LlmService } from '../llm/llm.service';
 import { ScenarioExecutionsService } from '../scenario-executions/scenario-executions.service';
-import { parseScenarioGraph, readScenarioGraph, ScenarioGraph } from '../scenarios/scenario-graph';
+import { parseScenarioGraph, ScenarioGraph } from '../scenarios/scenario-graph';
 import { ScenariosService } from '../scenarios/scenarios.service';
 import { SpeechToTextService } from '../speech-to-text/speech-to-text.service';
 import { TextToSpeechService } from '../text-to-speech/text-to-speech.service';
-import { hangUpTwiml, streamTwiml } from '../telephony/twiml';
-import { CallRecordsService } from './call-records.service';
 import { CallServices, CallSession } from './call-session';
 import { STREAM_START_LIMIT_MS } from './call-timing';
-import { mintCallToken, readCallToken } from './call-token';
+import { CALL_TOKEN_TTL_MS, mintCallToken, readCallToken } from './call-token';
 import { CallTransport } from './call-transport';
-import { BROWSER_STREAM_PATH, publicStreamUrl, TWILIO_STREAM_PATH } from './public-url';
 
 interface PendingCall {
   executionId: string;
   graph: ScenarioGraph;
   channel: ExecutionChannel;
   createdAt: number;
-  /** The call row of a phone call. */
-  callId: string | null;
   timer: ReturnType<typeof setTimeout>;
 }
-
-const NOT_CONNECTED = 'The media stream did not connect.';
 
 /** Starts calls and holds the live ones. A session lives in this process, next to its WebSocket. */
 @Injectable()
 export class CallsService implements BeforeApplicationShutdown {
-  /** How long a started call waits for its stream. Tests shorten it. */
-  streamStartLimitMs = STREAM_START_LIMIT_MS;
   private readonly logger = new Logger(CallsService.name);
   private readonly pending = new Map<string, PendingCall>();
   private readonly live = new Set<CallSession>();
@@ -41,7 +32,6 @@ export class CallsService implements BeforeApplicationShutdown {
     private readonly config: ConfigService,
     private readonly scenarios: ScenariosService,
     private readonly executions: ScenarioExecutionsService,
-    private readonly records: CallRecordsService,
     private readonly speechToText: SpeechToTextService,
     private readonly textToSpeech: TextToSpeechService,
     private readonly llm: LlmService,
@@ -60,64 +50,23 @@ export class CallsService implements BeforeApplicationShutdown {
       channel: ExecutionChannel.BROWSER,
       startedById: input.userId,
     });
-    this.hold({ executionId, graph, channel: ExecutionChannel.BROWSER, createdAt, callId: null });
+    this.hold({ executionId, graph, channel: ExecutionChannel.BROWSER, createdAt });
     return {
       executionId,
       token: mintCallToken(secret, executionId),
-      streamUrl: publicStreamUrl(this.config, BROWSER_STREAM_PATH),
+      streamUrl: `${this.publicBaseUrl().replace(/^http/, 'ws')}/calls/browser/stream`,
     };
   }
 
   /**
-   * Twilio's voice webhook, after its signature was checked. Returns TwiML: a media stream to the number's published
-   * scenario, or a hang-up when the number runs no published scenario.
+   * Called with the stream's `start` message. A valid token is used up here, so it works once. Returns null when
+   * the token is missing, expired, reused, or for another call, and the stream must close before any audio.
    */
-  async answerPhoneCall(input: { callSid: string; from: string | null; to: string }) {
-    const number = await this.records.findNumber(input.to);
-    if (!number || !number.scenario.active || this.draining) {
-      await this.records.recordUnanswered({
-        callSid: input.callSid,
-        from: input.from,
-        to: input.to,
-        phoneNumberId: number?.id ?? null,
-        ...(this.draining && number?.scenario.active ? { endReason: CallEndReason.ERROR, error: 'The server was restarting.' } : {}),
-      });
-      return hangUpTwiml();
-    }
-    const secret = this.secret();
-    const existing = await this.records.findByProviderId(input.callSid);
-    if (existing) {
-      // Twilio sent the webhook again. The call can still connect while its stream has not started.
-      const pending = existing.executionId ? this.pending.get(existing.executionId) : undefined;
-      return pending ? this.streamResponse(existing.id, pending.executionId, secret) : hangUpTwiml();
-    }
-    const graph = readScenarioGraph(number.scenario.graph);
-    const createdAt = Date.now();
-    const executionId = await this.executions.startSession({
-      scenarioId: number.scenario.id,
-      graph,
-      channel: ExecutionChannel.PHONE,
-      startedById: null,
-    });
-    const callId = await this.records.open({ executionId, phoneNumberId: number.id, callSid: input.callSid, from: input.from, to: input.to });
-    this.hold({ executionId, graph, channel: ExecutionChannel.PHONE, createdAt, callId });
-    return this.streamResponse(callId, executionId, secret);
-  }
-
-  /**
-   * Called with the stream's `start` message. A valid token is used up here, so it works once, and only on the
-   * stream of its own channel. Returns null otherwise, and the stream must close before any audio.
-   */
-  attach(
-    token: string | undefined,
-    transport: CallTransport,
-    start: { callSid?: string; streamSid?: string },
-    channel: ExecutionChannel,
-  ): CallSession | null {
+  attach(token: string | undefined, transport: CallTransport, start: { callSid?: string; streamSid?: string }): CallSession | null {
     if (!token || this.draining) return null;
     const callId = readCallToken(this.secret(), token);
     const call = callId ? this.pending.get(callId) : undefined;
-    if (!call || call.channel !== channel) return null;
+    if (!call) return null;
     this.pending.delete(call.executionId);
     clearTimeout(call.timer);
     const session = new CallSession({
@@ -130,10 +79,7 @@ export class CallsService implements BeforeApplicationShutdown {
       start,
     });
     this.live.add(session);
-    void session.done
-      .then((outcome) => (call.callId ? this.records.finish(call.callId, outcome) : undefined))
-      .catch((error: unknown) => this.logger.warn(`Could not close call ${call.callId}: ${error instanceof Error ? error.message : 'unknown error'}`))
-      .finally(() => this.live.delete(session));
+    void session.done.finally(() => this.live.delete(session));
     return session;
   }
 
@@ -142,10 +88,6 @@ export class CallsService implements BeforeApplicationShutdown {
     this.draining = true;
     if (this.live.size > 0) this.logger.log(`Waiting for ${this.live.size} live calls to end.`);
     await Promise.allSettled([...this.live].map((session) => session.done));
-  }
-
-  private streamResponse(callId: string, executionId: string, secret: string) {
-    return streamTwiml(publicStreamUrl(this.config, TWILIO_STREAM_PATH), { callId, token: mintCallToken(secret, executionId) });
   }
 
   private hold(call: Omit<PendingCall, 'timer'>) {
@@ -159,11 +101,10 @@ export class CallsService implements BeforeApplicationShutdown {
           topicId: null,
           topicLabel: null,
           menuChoice: null,
-          errorMessage: NOT_CONNECTED,
+          errorMessage: 'The media stream did not connect.',
         })
-        .then(() => (call.callId ? this.records.finish(call.callId, { status: 'FAILED', errorMessage: NOT_CONNECTED, callbackReason: null }) : undefined))
         .catch(() => undefined);
-    }, this.streamStartLimitMs);
+    }, Math.max(STREAM_START_LIMIT_MS, CALL_TOKEN_TTL_MS));
     this.pending.set(call.executionId, { ...call, timer });
   }
 
@@ -195,7 +136,12 @@ export class CallsService implements BeforeApplicationShutdown {
 
   private secret() {
     const secret = this.config.get<string>('CALL_TOKEN_SECRET')?.trim();
-    if (!secret || secret.length < 16) throw new BadRequestException('Set CALL_TOKEN_SECRET on the API before starting a call.');
+    if (!secret || secret.length < 16) throw new BadRequestException('Set CALL_TOKEN_SECRET on the API before playing a scenario.');
     return secret;
+  }
+
+  private publicBaseUrl() {
+    const configured = this.config.get<string>('PUBLIC_BASE_URL')?.trim().replace(/\/+$/, '');
+    return configured || `http://localhost:${this.config.get<string>('PORT') ?? '3001'}`;
   }
 }

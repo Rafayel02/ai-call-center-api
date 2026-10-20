@@ -48,20 +48,6 @@ enum ExecutionAudioKind {
   TTS
 }
 
-enum CallEndReason {
-  COMPLETED
-  CALLER_HUNG_UP
-  ERROR
-  NO_SCENARIO
-}
-
-enum CallbackReason {
-  TURN_LIMIT
-  SILENCE
-  DEFAULT_TOPIC
-  ERROR
-}
-
 model User {
   id           String   @id @default(uuid()) @db.Uuid
   email        String   @unique
@@ -76,7 +62,6 @@ model User {
   organizations  Organization[]
   scenarios      Scenario[]
   scenarioExecutions ScenarioExecution[]
-  calledBack         Call[]
 
   @@map("users")
 }
@@ -110,7 +95,6 @@ model Scenario {
   createdById    String       @map("created_by") @db.Uuid
   createdBy      User         @relation(fields: [createdById], references: [id], onDelete: Restrict)
   executions     ScenarioExecution[]
-  phoneNumbers   PhoneNumber[]
 
   @@index([organizationId])
   @@index([createdById])
@@ -140,49 +124,10 @@ model ScenarioExecution {
   mixMime        String?         @map("mix_mime")
   audio          ScenarioExecutionAudio[]
   events         ScenarioExecutionEvent[]
-  call           Call?
 
   @@index([scenarioId, startedAt])
   @@index([startedById])
   @@map("scenario_executions")
-}
-
-/// A number callers dial. Each runs exactly one published scenario.
-model PhoneNumber {
-  id         String   @id @default(uuid()) @db.Uuid
-  e164       String   @unique
-  scenarioId String   @map("scenario_id") @db.Uuid
-  scenario   Scenario @relation(fields: [scenarioId], references: [id], onDelete: Restrict)
-  createdAt  DateTime @default(now()) @map("created_at")
-  updatedAt  DateTime @updatedAt @map("updated_at")
-  calls      Call[]
-
-  @@index([scenarioId])
-  @@map("phone_numbers")
-}
-
-/// What the phone line knows about a call. The run itself is the execution.
-model Call {
-  id             String             @id @default(uuid()) @db.Uuid
-  executionId    String?            @unique @map("execution_id") @db.Uuid
-  execution      ScenarioExecution? @relation(fields: [executionId], references: [id], onDelete: SetNull)
-  phoneNumberId  String?            @map("phone_number_id") @db.Uuid
-  phoneNumber    PhoneNumber?       @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
-  providerCallId String             @unique @map("provider_call_id")
-  fromNumber     String?            @map("from_number")
-  toNumber       String             @map("to_number")
-  endReason      CallEndReason?     @map("end_reason")
-  error          String?
-  callbackReason CallbackReason?    @map("callback_reason")
-  calledBackAt   DateTime?          @map("called_back_at")
-  calledBackById String?            @map("called_back_by_id") @db.Uuid
-  calledBackBy   User?              @relation(fields: [calledBackById], references: [id], onDelete: SetNull)
-  startedAt      DateTime           @default(now()) @map("started_at")
-  endedAt        DateTime?          @map("ended_at")
-
-  @@index([startedAt])
-  @@index([callbackReason, calledBackAt])
-  @@map("calls")
 }
 
 model ScenarioExecutionAudio {
