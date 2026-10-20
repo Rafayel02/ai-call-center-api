@@ -25,6 +25,7 @@ const BROWSER_EVENTS = new Set([
   'turn.counted',
   'inquiry.accepted',
   'switch.routed',
+  'closing.routed',
   'execution.ended',
   'llm.aborted',
 ]);

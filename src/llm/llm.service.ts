@@ -42,6 +42,11 @@ const completeSchema = z
     }
   });
 
+const closingSchema = z.object({
+  question: z.string().trim().min(1).max(500),
+  answer: z.string().trim().min(1).max(2000),
+});
+
 const routeSchema = z.object({
   inquiry: z.string().trim().max(500).optional(),
   messages: z.array(messageSchema).max(40),
@@ -210,6 +215,47 @@ export class LlmService {
     });
     const allowed = new Set([...ids, parsed.data.defaultTopicId]);
     return { topicId: allowed.has(choice.topicId) ? choice.topicId : parsed.data.defaultTopicId };
+  }
+
+  async judgeClosing(id: string, dto: unknown, execution: ExecutionContext | null) {
+    const parsed = closingSchema.safeParse(dto);
+    if (!parsed.success) throw new BadRequestException('The closing question and the caller answer are required.');
+    const model = await this.findOrThrow(id);
+    if (!model.enabled) throw new BadRequestException('This model is disabled.');
+    const provider = this.providers.get(model.provider);
+    const snapshot = {
+      modelId: model.id,
+      modelName: model.name,
+      provider: model.provider,
+      providerModel: provider.toPublic(model.config as Record<string, unknown>).modelId,
+    };
+    const request = { question: parsed.data.question, answer: parsed.data.answer };
+    try {
+      const result = await provider.judgeClosing(model.config as Record<string, unknown>, request);
+      await this.executions.recordLlm(execution, {
+        model: snapshot,
+        systemPrompt: result.trace.systemPrompt,
+        messages: result.trace.messages,
+        raw: result.trace.raw,
+        turn: { outcome: result.outcome },
+        latencyMs: result.trace.latencyMs,
+        usage: result.trace.usage,
+      });
+      return { outcome: result.outcome };
+    } catch (error) {
+      const trace = error instanceof LlmCompletionError ? error.trace : null;
+      await this.executions.recordLlm(execution, {
+        model: snapshot,
+        systemPrompt: trace?.systemPrompt ?? '',
+        messages: trace?.messages ?? [{ role: 'user', content: request.answer }],
+        raw: trace?.raw ?? null,
+        latencyMs: trace?.latencyMs ?? 0,
+        usage: null,
+        error: error instanceof Error ? error.message : 'The model did not answer.',
+      });
+      if (error instanceof LlmCompletionError) throw new BadRequestException(error.message);
+      throw error;
+    }
   }
 
   private runTest(provider: LlmProviderClient, config: Record<string, unknown>) {

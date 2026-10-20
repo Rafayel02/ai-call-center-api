@@ -61,6 +61,18 @@ export class RouteCallDto {
   defaultTopicId!: string;
 }
 
+export class ClosingCallDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(500)
+  question!: string;
+
+  @IsString()
+  @MinLength(1)
+  @MaxLength(2000)
+  answer!: string;
+}
+
 export class CompleteTurnDto {
   @IsOptional()
   @IsString()

@@ -1,6 +1,10 @@
 import { BadRequestException } from '@nestjs/common';
 
-export const SCENARIO_NODE_TYPES = ['start', 'end', 'tts', 'loop', 'switch'] as const;
+export const SCENARIO_NODE_TYPES = ['start', 'end', 'tts', 'loop', 'switch', 'closing'] as const;
+
+export const CLOSING_HANDLES = ['questions', 'done'] as const;
+
+export const CLOSING_QUESTION = 'Do you have other questions?';
 
 export type ScenarioNodeType = (typeof SCENARIO_NODE_TYPES)[number];
 
@@ -28,11 +32,20 @@ export interface SwitchNodeData {
   topics: SwitchTopic[];
 }
 
+export interface ClosingNodeData {
+  sttModelId: string | null;
+  ttsModelId: string | null;
+  llmModelId: string | null;
+  silenceSeconds: number;
+  text: string;
+}
+
 export type ScenarioGraphNode =
   | { id: string; type: 'start' | 'end'; position: { x: number; y: number }; data: Record<string, never> }
   | { id: string; type: 'tts'; position: { x: number; y: number }; data: TtsNodeData }
   | { id: string; type: 'loop'; position: { x: number; y: number }; data: LoopNodeData }
-  | { id: string; type: 'switch'; position: { x: number; y: number }; data: SwitchNodeData };
+  | { id: string; type: 'switch'; position: { x: number; y: number }; data: SwitchNodeData }
+  | { id: string; type: 'closing'; position: { x: number; y: number }; data: ClosingNodeData };
 
 export interface ScenarioGraphEdge {
   id: string;
@@ -47,11 +60,12 @@ export interface ScenarioGraph {
 }
 
 const CONNECTIONS: Record<ScenarioNodeType, readonly ScenarioNodeType[]> = {
-  start: ['tts', 'loop'],
+  start: ['tts', 'loop', 'closing'],
   end: [],
-  tts: ['tts', 'loop', 'switch', 'end'],
-  loop: ['tts', 'loop', 'switch', 'end'],
-  switch: ['tts', 'loop', 'switch', 'end'],
+  tts: ['tts', 'loop', 'switch', 'closing', 'end'],
+  loop: ['tts', 'loop', 'switch', 'closing', 'end'],
+  switch: ['tts', 'loop', 'switch', 'closing', 'end'],
+  closing: ['tts', 'loop', 'switch', 'closing', 'end'],
 };
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
@@ -102,6 +116,7 @@ export function parseScenarioGraph(input: unknown): ScenarioGraph {
     }
   }
   assertTopicsReachEnd(nodes, edges);
+  assertClosingRoutes(nodes, edges);
 
   nodes.sort((left, right) => left.id.localeCompare(right.id));
   edges.sort((left, right) => left.id.localeCompare(right.id));
@@ -124,7 +139,7 @@ function parseNode(value: unknown): ScenarioGraphNode {
   if (typeof node.id !== 'string' || !ID_PATTERN.test(node.id)) {
     throw new BadRequestException('A scenario step has an invalid id.');
   }
-  if (node.type !== 'start' && node.type !== 'end' && node.type !== 'tts' && node.type !== 'loop' && node.type !== 'switch') {
+  if (node.type !== 'start' && node.type !== 'end' && node.type !== 'tts' && node.type !== 'loop' && node.type !== 'switch' && node.type !== 'closing') {
     throw new BadRequestException('A scenario step has an unknown type.');
   }
   const position = parsePosition(node.position);
@@ -136,6 +151,9 @@ function parseNode(value: unknown): ScenarioGraphNode {
   }
   if (node.type === 'switch') {
     return { id: node.id, type: node.type, position, data: parseSwitchData(node.data) };
+  }
+  if (node.type === 'closing') {
+    return { id: node.id, type: node.type, position, data: parseClosingData(node.data) };
   }
   return { id: node.id, type: node.type, position, data: {} };
 }
@@ -223,6 +241,21 @@ function parseTtsData(value: unknown): { modelId: string | null; text: string } 
   return { modelId, text };
 }
 
+function parseClosingData(value: unknown): ClosingNodeData {
+  const data = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  const text = data.text === undefined ? CLOSING_QUESTION : data.text;
+  if (typeof text !== 'string' || text.length > 500) {
+    throw new BadRequestException('The closing question can be at most 500 characters.');
+  }
+  return {
+    sttModelId: parseModelId(data.sttModelId, 'Choose a speech-to-text model.'),
+    ttsModelId: parseModelId(data.ttsModelId, 'Choose a text-to-speech model.'),
+    llmModelId: parseModelId(data.llmModelId, 'Choose an LLM.'),
+    silenceSeconds: parseBoundedInt(data.silenceSeconds, 4, 1, 30, 'Silence must be between 1 and 30 seconds.'),
+    text,
+  };
+}
+
 function parseSwitchData(value: unknown): SwitchNodeData {
   const data = value && typeof value === 'object' && !Array.isArray(value) ? (value as { topics?: unknown }) : {};
   if (!Array.isArray(data.topics) || data.topics.length < 1 || data.topics.length > 9) {
@@ -262,6 +295,19 @@ function parseTopic(value: unknown): SwitchTopic {
   return { id: topic.id, description, isDefault };
 }
 
+function assertClosingRoutes(nodes: ScenarioGraphNode[], edges: ScenarioGraphEdge[]) {
+  for (const node of nodes) {
+    if (node.type !== 'closing') continue;
+    const questions = edges.find((item) => item.source === node.id && item.sourceHandle === 'questions');
+    const done = edges.find((item) => item.source === node.id && item.sourceHandle === 'done');
+    if (!questions) throw new BadRequestException('Connect Still has questions.');
+    if (!done) throw new BadRequestException('Connect No more questions through to End.');
+    if (!leadsToEnd(done.target, nodes, edges, new Set([node.id]))) {
+      throw new BadRequestException('No more questions must lead to End.');
+    }
+  }
+}
+
 function assertTopicsReachEnd(nodes: ScenarioGraphNode[], edges: ScenarioGraphEdge[]) {
   for (const node of nodes) {
     if (node.type !== 'switch') continue;
@@ -291,6 +337,10 @@ function leadsToEnd(nodeId: string, nodes: ScenarioGraphNode[], edges: ScenarioG
       return edge ? leadsToEnd(edge.target, nodes, edges, nextSeen) : false;
     });
   }
+  if (node.type === 'closing') {
+    const edge = edges.find((item) => item.source === node.id && item.sourceHandle === 'done');
+    return edge ? leadsToEnd(edge.target, nodes, edges, nextSeen) : false;
+  }
   const outgoing = edges.filter((item) => item.source === nodeId);
   if (outgoing.length !== 1) return false;
   return leadsToEnd(outgoing[0].target, nodes, edges, nextSeen);
@@ -313,7 +363,7 @@ function parseEdge(value: unknown, nodes: ScenarioGraphNode[]): ScenarioGraphEdg
     throw new BadRequestException('A connection points at a missing step.');
   }
   if (!CONNECTIONS[source.type].includes(target.type)) {
-    throw new BadRequestException('Connect Start to Text to speech or Conversational Loop, then continue through to End.');
+    throw new BadRequestException('Connect Start to Text to speech, Conversational loop, or Closing, then continue through to End.');
   }
   let sourceHandle: string | undefined;
   if (edge.sourceHandle !== undefined && edge.sourceHandle !== null) {
@@ -326,8 +376,12 @@ function parseEdge(value: unknown, nodes: ScenarioGraphNode[]): ScenarioGraphEdg
     if (!sourceHandle || !source.data.topics.some((topic) => topic.id === sourceHandle)) {
       throw new BadRequestException('Connect each topic to its next step.');
     }
+  } else if (source.type === 'closing') {
+    if (sourceHandle !== 'questions' && sourceHandle !== 'done') {
+      throw new BadRequestException('Connect Still has questions and No more questions.');
+    }
   } else if (sourceHandle) {
-    throw new BadRequestException('Only a topic switch chooses a direction.');
+    throw new BadRequestException('Only a topic switch or a closing step chooses a direction.');
   }
   return sourceHandle
     ? { id: edge.id, source: edge.source, target: edge.target, sourceHandle }

@@ -1,4 +1,5 @@
 import { LlmProvider } from '@prisma/client';
+import { ClosingOutcome } from '../closing-choice';
 import { ConversationMessage, InquiryTurn } from '../inquiry-turn';
 import { RouteTopic } from '../topic-route';
 
@@ -55,6 +56,16 @@ export interface LlmRouteRequest {
   defaultTopicId: string;
 }
 
+export interface LlmClosingRequest {
+  question: string;
+  answer: string;
+}
+
+export interface LlmClosingResult {
+  outcome: ClosingOutcome;
+  trace: LlmCallTrace;
+}
+
 export interface LlmProviderClient {
   readonly id: LlmProvider;
   readonly supportsConnectionTest: boolean;
@@ -64,4 +75,5 @@ export interface LlmProviderClient {
   test?(config: Record<string, unknown>): Promise<ConnectionTestResult>;
   complete(config: Record<string, unknown>, request: LlmCompletionRequest): Promise<LlmCompletionResult>;
   route(config: Record<string, unknown>, request: LlmRouteRequest): Promise<{ topicId: string }>;
+  judgeClosing(config: Record<string, unknown>, request: LlmClosingRequest): Promise<LlmClosingResult>;
 }

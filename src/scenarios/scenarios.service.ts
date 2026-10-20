@@ -87,7 +87,7 @@ export class ScenariosService {
     const llmModelIds = new Set<string>();
     for (const node of graph.nodes) {
       if (node.type === 'tts' && node.data.modelId) ttsModelIds.add(node.data.modelId);
-      if (node.type === 'loop') {
+      if (node.type === 'loop' || node.type === 'closing') {
         if (node.data.ttsModelId) ttsModelIds.add(node.data.ttsModelId);
         if (node.data.sttModelId) sttModelIds.add(node.data.sttModelId);
         if (node.data.llmModelId) llmModelIds.add(node.data.llmModelId);

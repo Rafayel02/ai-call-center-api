@@ -9,9 +9,10 @@ import {
   EncryptedSecret,
   secretHint,
 } from '../../common/crypto/credential-cipher';
+import { closingPrompt, readClosingChoice } from '../closing-choice';
 import { inquirySystemPrompt, readInquiryTurn } from '../inquiry-turn';
 import { readTopicChoice, topicRoutePrompt } from '../topic-route';
-import { ConnectionTestResult, LlmCallTrace, LlmCompletionError, LlmCompletionRequest, LlmProviderClient, LlmRouteRequest, LlmUsage } from './llm-provider';
+import { ConnectionTestResult, LlmCallTrace, LlmClosingRequest, LlmCompletionError, LlmCompletionRequest, LlmProviderClient, LlmRouteRequest, LlmUsage } from './llm-provider';
 
 export const OPENAI_MODEL_IDS = ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1'] as const;
 
@@ -236,6 +237,70 @@ export class OpenAiProvider implements LlmProviderClient {
       return { topicId: readTopicChoice(JSON.parse(message.content), allowed, request.defaultTopicId) };
     } catch {
       return { topicId: request.defaultTopicId };
+    }
+  }
+
+  async judgeClosing(config: Record<string, unknown>, request: LlmClosingRequest) {
+    const stored = this.readStored(config);
+    const apiKey = decryptSecret(stored.apiKey, this.key());
+    const started = Date.now();
+    const systemPrompt = closingPrompt(request.question, request.answer);
+    const messages = [{ role: 'user', content: request.answer }];
+    let response: Response;
+    try {
+      response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: stored.modelId,
+          temperature: 0,
+          max_completion_tokens: 40,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            ...messages,
+          ],
+          response_format: {
+            type: 'json_schema',
+            json_schema: {
+              name: 'closing_choice',
+              strict: true,
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  outcome: { type: 'string', enum: ['questions', 'done'] },
+                },
+                required: ['outcome'],
+              },
+            },
+          },
+        }),
+      });
+    } catch {
+      throw new BadRequestException('Could not reach OpenAI.');
+    }
+    if (!response.ok) {
+      throw new BadRequestException(await this.openAiMessage(response));
+    }
+    const payload = (await response.json()) as {
+      choices?: Array<{ message?: { content?: unknown; refusal?: unknown } }>;
+      usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown };
+    };
+    const message = payload.choices?.[0]?.message;
+    const trace = this.trace(systemPrompt, messages, payload, this.readUsage(payload.usage), started);
+    if (message && typeof message.refusal === 'string' && message.refusal.trim()) {
+      return { outcome: 'questions' as const, trace };
+    }
+    if (!message || typeof message.content !== 'string' || !message.content.trim()) {
+      return { outcome: 'questions' as const, trace };
+    }
+    try {
+      return { outcome: readClosingChoice(JSON.parse(message.content)), trace };
+    } catch {
+      return { outcome: 'questions' as const, trace };
     }
   }
 
