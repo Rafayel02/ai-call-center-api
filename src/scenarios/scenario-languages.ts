@@ -179,9 +179,17 @@ export interface LanguageVoice {
 
 export type ScenarioLanguageModels = Partial<Record<ScenarioLanguage, LanguageVoice>>;
 
-export function languageKeyPrompt(languages: ScenarioLanguage[]) {
-  const choices = languages.map((code, index) => `for ${LANGUAGE_NAME[code]} press ${index + 1}`);
-  return `Hey, ${choices.join(', ')}.`;
+const KEY_DIGIT: Record<ScenarioLanguage, string[]> = {
+  hy: ['մեկ', 'երկու', 'երեք'],
+  en: ['one', 'two', 'three'],
+  ru: ['один', 'два', 'три'],
+};
+
+export function languageKeyLine(language: ScenarioLanguage, index: number) {
+  const digit = KEY_DIGIT[language][index] ?? String(index + 1);
+  if (language === 'hy') return `Հայերենի համար սեղմեք ${digit}։`;
+  if (language === 'ru') return `Для русского нажмите ${digit}.`;
+  return `For English, press ${digit}.`;
 }
 
 export function emptyVoice(): LanguageVoice {

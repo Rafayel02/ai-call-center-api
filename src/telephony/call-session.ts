@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 import { ExecutionContext, SpokenKind } from '../scenario-executions/execution-context';
 import { ScenarioGraph, ScenarioGraphNode } from '../scenarios/scenario-graph';
-import { LANGUAGE_NAME, LanguageVoice, ScenarioLanguage, ScenarioLanguageModels, delayLines, emptyVoice, languageKeyPrompt, spokenLine } from '../scenarios/scenario-languages';
+import { LANGUAGE_NAME, LanguageVoice, ScenarioLanguage, ScenarioLanguageModels, delayLines, emptyVoice, languageKeyLine, spokenLine } from '../scenarios/scenario-languages';
 import { CallLog } from './call-log';
 import { decodeUlaw, pcmWav, rms } from './ulaw';
 
@@ -172,13 +172,16 @@ export class PhoneScenarioSession {
 
   private async chooseLanguage() {
     if (!this.askLanguage || this.languages.length === 0 || this.closed) return;
-    const modelId = this.languageModels[this.languages[0]]?.ttsModelId ?? null;
-    if (!modelId) {
+    if (this.languages.some((code) => !this.languageModels[code]?.ttsModelId)) {
       this.closed = true;
       return;
     }
     this.pendingDigit = null;
-    await this.speak(modelId, languageKeyPrompt(this.languages), 'language', 'step');
+    for (let index = 0; index < this.languages.length; index += 1) {
+      const code = this.languages[index];
+      await this.speak(this.languageModels[code]?.ttsModelId ?? null, languageKeyLine(code, index), 'language', 'step');
+      if (this.closed) return;
+    }
     const pressed = this.pendingDigit;
     this.pendingDigit = null;
     const digit = pressed ?? (await this.waitForDigit(12_000));
