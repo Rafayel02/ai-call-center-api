@@ -5,7 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateScenarioDto } from './dto/create-scenario.dto';
 import { SaveScenarioGraphDto } from './dto/save-scenario-graph.dto';
 import { emptyScenarioGraph, parseScenarioGraph, readScenarioGraph } from './scenario-graph';
-import { LANGUAGE_NAME, ScenarioLanguage, applyTranslations, detectScript, isScenarioLanguage, spokenSample, spokenSlots, stampLanguage } from './scenario-languages';
+import { LANGUAGE_NAME, ScenarioLanguage, applyTranslations, clearGraphModels, detectScript, emptyVoice, isScenarioLanguage, languageModelsFor, modelsOnGraph, spokenSample, spokenSlots, stampLanguage } from './scenario-languages';
 
 const scenarioSummary = {
   id: true,
@@ -29,20 +29,42 @@ export class ScenariosService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    const rows = await this.prisma.scenario.findMany({ select: { id: true, languages: true, graph: true } });
+    const rows = await this.prisma.scenario.findMany({ select: { id: true, languages: true, languageModels: true, graph: true } });
     for (const row of rows) {
-      if (row.languages.some(isScenarioLanguage)) continue;
       try {
-        const sample = spokenSample(row.graph);
-        const script = detectScript(sample);
-        const detected = script === 'en' ? ((await this.llm.detectLanguage(sample)) ?? 'en') : script;
+        let languages = row.languages.filter(isScenarioLanguage);
+        let graph: Prisma.JsonValue = row.graph;
+        if (languages.length === 0) {
+          const sample = spokenSample(graph);
+          const script = detectScript(sample);
+          const detected = script === 'en' ? ((await this.llm.detectLanguage(sample)) ?? 'en') : script;
+          languages = [detected];
+          graph = stampLanguage(graph, detected) as Prisma.JsonValue;
+          this.logger.log(`Set scenario ${row.id} to ${LANGUAGE_NAME[detected]}.`);
+        }
+        const present = row.languageModels && typeof row.languageModels === 'object' && !Array.isArray(row.languageModels) ? (row.languageModels as Record<string, unknown>) : {};
+        const lifted = modelsOnGraph(graph);
+        const models = languageModelsFor(languages, present, false);
+        let modelsChanged = false;
+        languages.forEach((language, index) => {
+          if (Object.prototype.hasOwnProperty.call(present, language)) return;
+          models[language] = index === 0 ? lifted : emptyVoice();
+          modelsChanged = true;
+        });
+        const cleared = clearGraphModels(graph);
+        const graphChanged = JSON.stringify(cleared) !== JSON.stringify(graph);
+        if (languages.join() === row.languages.join() && !modelsChanged && !graphChanged) continue;
         await this.prisma.scenario.update({
           where: { id: row.id },
-          data: { languages: [detected], graph: stampLanguage(row.graph, detected) as Prisma.InputJsonValue },
+          data: {
+            languages,
+            languageModels: models as unknown as Prisma.InputJsonValue,
+            graph: cleared as Prisma.InputJsonValue,
+          },
         });
-        this.logger.log(`Set scenario ${row.id} to ${LANGUAGE_NAME[detected]}.`);
+        if (modelsChanged) this.logger.log(`Moved models for scenario ${row.id} onto ${LANGUAGE_NAME[languages[0]]}.`);
       } catch (error) {
-        this.logger.error(`Could not detect a language for scenario ${row.id}.`, error instanceof Error ? error.stack : undefined);
+        this.logger.error(`Could not prepare languages for scenario ${row.id}.`, error instanceof Error ? error.stack : undefined);
       }
     }
   }
@@ -57,10 +79,10 @@ export class ScenariosService implements OnModuleInit {
   async get(id: string) {
     const scenario = await this.prisma.scenario.findUnique({
       where: { id },
-      select: { ...scenarioSummary, graph: true, phoneNumber: { select: { id: true, e164: true } } },
+      select: { ...scenarioSummary, graph: true, languageModels: true, phoneNumber: { select: { id: true, e164: true } } },
     });
     if (!scenario) throw new NotFoundException('Scenario not found.');
-    return { ...scenario, graph: readScenarioGraph(scenario.graph) };
+    return presentScenario(scenario);
   }
 
   /** One number belongs to one scenario. Passing null detaches the current number. */
@@ -96,6 +118,7 @@ export class ScenariosService implements OnModuleInit {
         description: dto.description ?? null,
         icon: dto.icon,
         languages: [...new Set(dto.languages)],
+        languageModels: Object.fromEntries([...new Set(dto.languages)].map((language) => [language, emptyVoice()])) as unknown as Prisma.InputJsonValue,
         graph: emptyScenarioGraph() as unknown as Prisma.InputJsonValue,
         createdById,
       },
@@ -129,7 +152,7 @@ export class ScenariosService implements OnModuleInit {
   }
 
   async addLanguage(id: string, language: ScenarioLanguage) {
-    const scenario = await this.prisma.scenario.findUnique({ where: { id }, select: { languages: true, graph: true } });
+    const scenario = await this.prisma.scenario.findUnique({ where: { id }, select: { languages: true, languageModels: true, graph: true } });
     if (!scenario) throw new NotFoundException('Scenario not found.');
     const languages = scenario.languages.filter(isScenarioLanguage);
     if (languages.includes(language)) return this.get(id);
@@ -138,9 +161,14 @@ export class ScenariosService implements OnModuleInit {
     const slots = spokenSlots(scenario.graph, source);
     const translated = await this.llm.translateLines(slots.flatMap((slot) => slot.lines), LANGUAGE_NAME[language]);
     const graph = applyTranslations(scenario.graph, language, slots, translated);
+    const models = { ...languageModelsFor(languages, scenario.languageModels, false), [language]: emptyVoice() };
     await this.prisma.scenario.update({
       where: { id },
-      data: { languages: [...languages, language], graph: graph as Prisma.InputJsonValue },
+      data: {
+        languages: [...languages, language],
+        languageModels: models as unknown as Prisma.InputJsonValue,
+        graph: graph as Prisma.InputJsonValue,
+      },
     });
     return this.get(id);
   }
@@ -150,27 +178,21 @@ export class ScenariosService implements OnModuleInit {
     if (!existing) throw new NotFoundException('Scenario not found.');
     const languages = existing.languages.filter(isScenarioLanguage);
     const graph = parseScenarioGraph(dto, languages);
-    const ttsModelIds = new Set<string>();
-    const sttModelIds = new Set<string>();
-    const llmModelIds = new Set<string>();
-    for (const node of graph.nodes) {
-      if (node.type === 'tts' && node.data.modelId) ttsModelIds.add(node.data.modelId);
-      if (node.type === 'loop' || node.type === 'closing') {
-        if (node.data.ttsModelId) ttsModelIds.add(node.data.ttsModelId);
-        if (node.data.sttModelId) sttModelIds.add(node.data.sttModelId);
-        if (node.data.llmModelId) llmModelIds.add(node.data.llmModelId);
-      }
-    }
-    await this.assertModels(this.prisma.textToSpeechModel, [...ttsModelIds], 'Choose a text-to-speech model that exists.');
-    await this.assertModels(this.prisma.speechToTextModel, [...sttModelIds], 'Choose a speech-to-text model that exists.');
-    await this.assertModels(this.prisma.llmModel, [...llmModelIds], 'Choose an LLM that exists.');
+    const languageModels = dto.languageModels === undefined ? undefined : languageModelsFor(languages, dto.languageModels, true);
+    const ids = modelIds(languageModels);
+    await this.assertModels(this.prisma.textToSpeechModel, ids.tts, 'Choose a text-to-speech model that exists.');
+    await this.assertModels(this.prisma.speechToTextModel, ids.stt, 'Choose a speech-to-text model that exists.');
+    await this.assertModels(this.prisma.llmModel, ids.llm, 'Choose an LLM that exists.');
     try {
       const scenario = await this.prisma.scenario.update({
         where: { id },
-        data: { graph: graph as unknown as Prisma.InputJsonValue },
-        select: { graph: true },
+        data: {
+          graph: graph as unknown as Prisma.InputJsonValue,
+          ...(languageModels ? { languageModels: languageModels as unknown as Prisma.InputJsonValue } : {}),
+        },
+        select: { ...scenarioSummary, graph: true, languageModels: true, phoneNumber: { select: { id: true, e164: true } } },
       });
-      return readScenarioGraph(scenario.graph);
+      return presentScenario(scenario);
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
         throw new NotFoundException('Scenario not found.');
@@ -178,4 +200,25 @@ export class ScenariosService implements OnModuleInit {
       throw error;
     }
   }
+}
+
+function presentScenario<T extends { languages: string[]; languageModels: Prisma.JsonValue; graph: Prisma.JsonValue }>(scenario: T) {
+  const languages = scenario.languages.filter(isScenarioLanguage);
+  return {
+    ...scenario,
+    graph: readScenarioGraph(scenario.graph),
+    languageModels: languageModelsFor(languages, scenario.languageModels, false),
+  };
+}
+
+function modelIds(models: Record<string, { sttModelId: string | null; ttsModelId: string | null; llmModelId: string | null }> | undefined) {
+  const stt = new Set<string>();
+  const tts = new Set<string>();
+  const llm = new Set<string>();
+  for (const voice of Object.values(models ?? {})) {
+    if (voice.sttModelId) stt.add(voice.sttModelId);
+    if (voice.ttsModelId) tts.add(voice.ttsModelId);
+    if (voice.llmModelId) llm.add(voice.llmModelId);
+  }
+  return { stt: [...stt], tts: [...tts], llm: [...llm] };
 }

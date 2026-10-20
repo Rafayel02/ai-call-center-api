@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 import { ExecutionContext, SpokenKind } from '../scenario-executions/execution-context';
 import { ScenarioGraph, ScenarioGraphNode } from '../scenarios/scenario-graph';
-import { LANGUAGE_NAME, ScenarioLanguage, SPOKEN_NAME, delayLines, matchSpokenLanguage, spokenLine } from '../scenarios/scenario-languages';
+import { LANGUAGE_NAME, LanguageVoice, ScenarioLanguage, ScenarioLanguageModels, SPOKEN_NAME, delayLines, emptyVoice, matchSpokenLanguage, spokenLine } from '../scenarios/scenario-languages';
 import { CallLog } from './call-log';
 import { decodeUlaw, pcmWav, rms } from './ulaw';
 
@@ -59,6 +59,7 @@ export class PhoneScenarioSession {
     private readonly deps: CallDeps,
     private log: CallLog,
     private readonly languages: ScenarioLanguage[] = ['en'],
+    private readonly languageModels: ScenarioLanguageModels = {},
   ) {
     this.language = languages[0] ?? 'en';
   }
@@ -106,7 +107,7 @@ export class PhoneScenarioSession {
         if (!node || node.type === 'end' || node.type === 'start') break;
         seen.add(nodeId);
         if (node.type === 'tts') {
-          await this.speak(node.data.modelId, spokenLine(node.data, this.language), node.id, 'step');
+          await this.speak(this.voice().ttsModelId, spokenLine(node.data, this.language), node.id, 'step');
           nodeId = this.next(node.id, null);
         } else if (node.type === 'loop') {
           const accepted = await this.loop(node);
@@ -132,21 +133,29 @@ export class PhoneScenarioSession {
     }
   }
 
+  private voice(): LanguageVoice {
+    return this.languageModels[this.language] ?? emptyVoice();
+  }
+
   private async chooseLanguage() {
     if (this.languages.length < 2 || this.closed) return;
-    let ttsModelId: string | null = null;
-    let sttModelId: string | null = null;
-    for (const node of this.graph.nodes) {
-      if (node.type === 'tts' && node.data.modelId) ttsModelId ??= node.data.modelId;
-      if ((node.type === 'loop' || node.type === 'closing') && node.data.ttsModelId) ttsModelId ??= node.data.ttsModelId;
-      if ((node.type === 'loop' || node.type === 'closing') && node.data.sttModelId) sttModelId ??= node.data.sttModelId;
+    for (const code of this.languages) {
+      const modelId = this.languageModels[code]?.ttsModelId;
+      if (modelId) await this.speak(modelId, SPOKEN_NAME[code], 'language', 'step');
     }
-    if (!ttsModelId || !sttModelId) return;
-    await this.speak(ttsModelId, this.languages.map((code) => SPOKEN_NAME[code]).join('. '), 'language', 'step');
     const heard = await this.listen(4);
     if (!heard || this.closed) return;
-    const transcript = await this.deps.transcribe(sttModelId, pcmWav(heard), this.log.context('language', null));
-    const matched = matchSpokenLanguage(transcript, this.languages);
+    const wav = pcmWav(heard);
+    const transcripts = await Promise.all(
+      this.languages.map(async (code) => {
+        const modelId = this.languageModels[code]?.sttModelId;
+        if (!modelId) return '';
+        return this.deps.transcribe(modelId, wav, this.log.context('language', null));
+      }),
+    );
+    const named = this.languages.find((code, index) => matchSpokenLanguage(transcripts[index] ?? '', [code]));
+    const any = this.languages.map((_, index) => matchSpokenLanguage(transcripts[index] ?? '', this.languages)).find((code) => code);
+    const matched = named ?? any;
     if (matched) this.language = matched;
   }
 
@@ -155,7 +164,8 @@ export class PhoneScenarioSession {
   }
 
   private async loop(node: Extract<ScenarioGraphNode, { type: 'loop' }>) {
-    const { sttModelId, ttsModelId, llmModelId, silenceSeconds, maxTurns } = node.data;
+    const { silenceSeconds, maxTurns } = node.data;
+    const { sttModelId, ttsModelId, llmModelId } = this.voice();
     const fillers = delayLines(node.data, this.language);
     if (!sttModelId || !ttsModelId || !llmModelId) return false;
     let turns = 0;
@@ -202,7 +212,8 @@ export class PhoneScenarioSession {
   }
 
   private async closing(node: Extract<ScenarioGraphNode, { type: 'closing' }>) {
-    const { ttsModelId, sttModelId, llmModelId, silenceSeconds } = node.data;
+    const { silenceSeconds } = node.data;
+    const { ttsModelId, sttModelId, llmModelId } = this.voice();
     const text = spokenLine(node.data, this.language);
     if (!ttsModelId || !sttModelId || !llmModelId || !text) return 'done' as const;
     await this.speak(ttsModelId, text, node.id, 'step');

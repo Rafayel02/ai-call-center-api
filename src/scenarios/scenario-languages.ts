@@ -1,3 +1,5 @@
+import { BadRequestException } from '@nestjs/common';
+
 export const SCENARIO_LANGUAGES = ['hy', 'en', 'ru'] as const;
 
 export type ScenarioLanguage = (typeof SCENARIO_LANGUAGES)[number];
@@ -155,6 +157,7 @@ export function applyTranslations(graph: unknown, language: ScenarioLanguage, sl
 }
 
 export function matchSpokenLanguage(transcript: string, options: ScenarioLanguage[]): ScenarioLanguage | null {
+  if (!transcript.trim()) return null;
   const hints: Record<ScenarioLanguage, RegExp> = {
     hy: /հայ|armenia/i,
     en: /english|անգլ|англ/i,
@@ -164,4 +167,72 @@ export function matchSpokenLanguage(transcript: string, options: ScenarioLanguag
   if (named) return named;
   const script = detectScript(transcript);
   return options.includes(script) ? script : null;
+}
+
+const MODEL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export interface LanguageVoice {
+  sttModelId: string | null;
+  ttsModelId: string | null;
+  llmModelId: string | null;
+}
+
+export type ScenarioLanguageModels = Partial<Record<ScenarioLanguage, LanguageVoice>>;
+
+export function emptyVoice(): LanguageVoice {
+  return { sttModelId: null, ttsModelId: null, llmModelId: null };
+}
+
+export function languageModelsFor(languages: ScenarioLanguage[], value: unknown, strict: boolean): Record<ScenarioLanguage, LanguageVoice> {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  const models = {} as Record<ScenarioLanguage, LanguageVoice>;
+  for (const language of languages) {
+    models[language] = readVoice(source[language], strict);
+  }
+  return models;
+}
+
+export function modelsOnGraph(graph: unknown): LanguageVoice {
+  const voice = emptyVoice();
+  for (const node of nodesOf(graph)) {
+    const data = node.data ?? {};
+    if (node.type === 'tts' && typeof data.modelId === 'string') voice.ttsModelId ??= data.modelId;
+    if (node.type === 'loop' || node.type === 'closing') {
+      if (typeof data.sttModelId === 'string') voice.sttModelId ??= data.sttModelId;
+      if (typeof data.ttsModelId === 'string') voice.ttsModelId ??= data.ttsModelId;
+      if (typeof data.llmModelId === 'string') voice.llmModelId ??= data.llmModelId;
+    }
+  }
+  return voice;
+}
+
+export function clearGraphModels(graph: unknown): unknown {
+  const copy = structuredClone(graph) as { nodes?: GraphNode[] };
+  for (const node of nodesOf(copy)) {
+    const data = node.data;
+    if (!data) continue;
+    if ('modelId' in data) data.modelId = null;
+    if ('sttModelId' in data) data.sttModelId = null;
+    if ('ttsModelId' in data) data.ttsModelId = null;
+    if ('llmModelId' in data) data.llmModelId = null;
+  }
+  return copy;
+}
+
+function readVoice(value: unknown, strict: boolean): LanguageVoice {
+  const row = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  return {
+    sttModelId: optionalModel(row.sttModelId, strict),
+    ttsModelId: optionalModel(row.ttsModelId, strict),
+    llmModelId: optionalModel(row.llmModelId, strict),
+  };
+}
+
+function optionalModel(value: unknown, strict: boolean): string | null {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value !== 'string' || !MODEL_ID.test(value)) {
+    if (strict) throw new BadRequestException('Choose a model that exists.');
+    return null;
+  }
+  return value;
 }
