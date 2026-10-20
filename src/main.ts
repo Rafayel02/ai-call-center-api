@@ -8,6 +8,7 @@ import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { attachCallStreams } from './calls/call-streams';
 import { CallsService } from './calls/calls.service';
+import { TelephonyService } from './telephony/telephony.service';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
 async function bootstrap() {
@@ -46,7 +47,10 @@ async function bootstrap() {
   app.useGlobalFilters(new HttpExceptionFilter());
   app.getHttpAdapter().getInstance().set('trust proxy', 1);
   app.enableShutdownHooks();
-  attachCallStreams(app.getHttpServer() as Server, app.get(CallsService));
+  const telephony = app.get(TelephonyService);
+  attachCallStreams(app.getHttpServer() as Server, app.get(CallsService), {
+    verifyTwilio: (request) => telephony.verifyStreamHandshake(request),
+  });
 
   const port = Number(process.env.PORT ?? 3001);
   await app.listen(port, '0.0.0.0');

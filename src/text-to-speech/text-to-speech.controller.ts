@@ -1,9 +1,7 @@
-import { Body, Controller, Delete, Get, Headers, Param, ParseUUIDPipe, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { IncomingHttpHeaders } from 'http';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AuthUser, CurrentUser } from '../common/decorators/current-user.decorator';
-import { readExecutionContext } from '../scenario-executions/execution-context';
 import { CreateTextToSpeechModelDto, SpeakDto, TestTextToSpeechDraftDto, UpdateTextToSpeechModelDto } from './dto/text-to-speech-model.dto';
 import { TextToSpeechService } from './text-to-speech.service';
 
@@ -64,7 +62,7 @@ export class TextToSpeechController {
 
   @Post(':id/speak')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
-  speak(@Param('id', ParseUUIDPipe) id: string, @Body() dto: SpeakDto, @Headers() headers: IncomingHttpHeaders) {
-    return this.models.speak(id, dto.text, readExecutionContext(headers));
+  speak(@Param('id', ParseUUIDPipe) id: string, @Body() dto: SpeakDto) {
+    return this.models.speak(id, dto.text);
   }
 }
