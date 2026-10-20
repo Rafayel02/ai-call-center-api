@@ -3,6 +3,7 @@ import { ExecutionContext, SpokenKind } from '../scenario-executions/execution-c
 import { ScenarioGraph, ScenarioGraphNode } from '../scenarios/scenario-graph';
 import { LANGUAGE_NAME, LanguageVoice, ScenarioLanguage, ScenarioLanguageModels, delayLines, emptyVoice, languageKeyLine, spokenLine } from '../scenarios/scenario-languages';
 import { CallLog } from './call-log';
+import { DtmfDecoder } from './dtmf';
 import { decodeUlaw, pcmWav, rms } from './ulaw';
 
 const FRAME = 160;
@@ -26,6 +27,7 @@ export interface CallDeps {
     execution: ExecutionContext | null,
   ): Promise<Turn>;
   judgeClosing(modelId: string, question: string, answer: string, execution: ExecutionContext | null): Promise<'questions' | 'done'>;
+  onDigit?(digit: string): void;
 }
 
 interface Inbound {
@@ -54,8 +56,10 @@ export class PhoneScenarioSession {
   private utteranceDurationMs = 0;
   private language: ScenarioLanguage;
   private languageLocked = false;
+  private listeningForDigit = false;
   private pendingDigit: string | null = null;
   private digitWait: ((digit: string | null) => void) | null = null;
+  private readonly tones = new DtmfDecoder((digit) => this.takeDigit(digit));
 
   constructor(
     private readonly socket: WebSocket,
@@ -92,11 +96,12 @@ export class PhoneScenarioSession {
     if (message.event === 'start' && message.start?.streamSid) this.streamSid = message.start.streamSid;
     if (message.event === 'media' && message.media?.payload) {
       const decoded = decodeUlaw(Buffer.from(message.media.payload, 'base64'));
+      if (this.listeningForDigit) this.tones.push(decoded);
       this.log.caller(decoded);
       if (!this.playing) this.samples.push(decoded);
     }
     if (message.event === 'mark' && message.mark?.name) this.markWait?.(message.mark.name);
-    if (message.event === 'dtmf' && message.dtmf?.digit) this.takeDigit(message.dtmf.digit);
+    if (message.event === 'dtmf' && message.dtmf?.digit && this.listeningForDigit) this.takeDigit(message.dtmf.digit);
     if (message.event === 'stop') {
       this.closed = true;
       this.digitWait?.(null);
@@ -150,8 +155,11 @@ export class PhoneScenarioSession {
   }
 
   private takeDigit(digit: string) {
-    if (this.digitWait) this.digitWait(digit);
-    else this.pendingDigit = digit;
+    const key = digit.trim();
+    if (!/^[0-9]$/.test(key)) return;
+    this.deps.onDigit?.(key);
+    if (this.digitWait) this.digitWait(key);
+    else this.pendingDigit = key;
   }
 
   private waitForDigit(ms: number) {
@@ -180,20 +188,26 @@ export class PhoneScenarioSession {
       return;
     }
     this.pendingDigit = null;
-    for (let index = 0; index < this.languages.length; index += 1) {
-      const code = this.languages[index];
-      await this.speak(this.languageModels[code]?.ttsModelId ?? null, languageKeyLine(code, index), 'language', 'step');
-      if (this.closed) return;
+    this.listeningForDigit = true;
+    try {
+      for (let index = 0; index < this.languages.length; index += 1) {
+        const code = this.languages[index];
+        await this.speak(this.languageModels[code]?.ttsModelId ?? null, languageKeyLine(code, index), 'language', 'step');
+        if (this.closed) return;
+        if (this.pendingDigit) break;
+      }
+      const pressed = this.pendingDigit;
+      this.pendingDigit = null;
+      const digit = pressed ?? (await this.waitForDigit(12_000));
+      const chosen = digit ? this.languages[Number(digit) - 1] : undefined;
+      if (!chosen) {
+        this.closed = true;
+        return;
+      }
+      this.language = chosen;
+    } finally {
+      this.listeningForDigit = false;
     }
-    const pressed = this.pendingDigit;
-    this.pendingDigit = null;
-    const digit = pressed ?? (await this.waitForDigit(12_000));
-    const chosen = digit ? this.languages[Number(digit) - 1] : undefined;
-    if (!chosen) {
-      this.closed = true;
-      return;
-    }
-    this.language = chosen;
   }
 
   private heardContext(nodeId: string) {

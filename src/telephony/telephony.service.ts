@@ -17,7 +17,7 @@ import { CallDeps, PhoneScenarioSession } from './call-session';
 import { isTwilioSignature } from './twilio-signature';
 import { ScenarioLanguage, ScenarioLanguageModels, isScenarioLanguage, languageKeyLine, languageModelsFor } from '../scenarios/scenario-languages';
 import { decodeUlaw, pcmWav } from './ulaw';
-import { gatherTwiml, hangupTwiml, sayTwiml, streamTwiml } from './twiml';
+import { hangupTwiml, sayTwiml, streamTwiml } from './twiml';
 
 const MISSING = 'Add a Twilio phone streaming service before taking phone calls.';
 const NOT_READY = 'This number is not ready to take calls.';
@@ -62,12 +62,8 @@ export class TelephonyService {
     if (!scenario) return sayTwiml(NOT_READY);
     await this.prisma.phoneCall.update({ where: { id: callId }, data: { scenarioId: scenario.id } });
     if (scenario.askLanguage && scenario.languages.some((code) => !scenario.languageModels[code]?.ttsModelId)) return sayTwiml(NOT_READY);
-    const pending = await this.hold(callId, scenario);
-    if (!scenario.askLanguage) return this.streamFor(input.origin, callId);
-    const promptToken = mintCallToken(this.secret(), callId, Date.now(), 180_000);
-    const plays = scenario.languages.map((_, index) => `${input.origin}/telephony/twilio/prompt/${promptToken}/${index}`);
-    pending.expires = Date.now() + 180_000;
-    return gatherTwiml(`${input.origin}/telephony/twilio/language`, plays);
+    await this.hold(callId, scenario);
+    return this.streamFor(input.origin, callId);
   }
 
   async language(input: { origin: string; path: string; params: Record<string, string>; signature: string | undefined }) {
@@ -266,6 +262,7 @@ export class TelephonyService {
         const result = await this.llm.judgeClosing(modelId, { question, answer }, execution);
         return result.outcome;
       },
+      onDigit: (digit) => this.logger.log(`Phone digit ${digit}`),
     };
   }
 
