@@ -14,11 +14,14 @@ async function bootstrap() {
   app.use(json({ limit: '2mb' }));
   app.use(urlencoded({ extended: true, limit: '2mb' }));
   const config = app.get(ConfigService);
-  const origins = config
-    .getOrThrow<string>('FRONTEND_URL')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
+  const origins = [
+    ...config
+      .getOrThrow<string>('FRONTEND_URL')
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean),
+    'https://aicallcenter.am',
+  ].filter((origin, index, all) => all.indexOf(origin) === index);
 
   app.setGlobalPrefix('');
   app.use(helmet());
