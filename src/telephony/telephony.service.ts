@@ -3,12 +3,15 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { IncomingMessage } from 'node:http';
 import { WebSocket } from 'ws';
+import { ExecutionStatus } from '@prisma/client';
 import { LlmService } from '../llm/llm.service';
+import { ScenarioExecutionsService } from '../scenario-executions/scenario-executions.service';
 import { PhoneStreamingService } from '../phone-streaming/phone-streaming.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { readScenarioGraph, ScenarioGraph } from '../scenarios/scenario-graph';
 import { SpeechToTextService } from '../speech-to-text/speech-to-text.service';
 import { TextToSpeechService } from '../text-to-speech/text-to-speech.service';
+import { PhoneCallLog, silentLog } from './call-log';
 import { mintCallToken, readCallToken } from './call-token';
 import { CallDeps, PhoneScenarioSession } from './call-session';
 import { isTwilioSignature } from './twilio-signature';
@@ -19,6 +22,8 @@ const NOT_READY = 'This number is not ready to take calls.';
 
 interface PendingCall {
   graph: ScenarioGraph;
+  scenarioId: string;
+  startedById: string;
   expires: number;
 }
 
@@ -34,6 +39,7 @@ export class TelephonyService {
     private readonly speech: TextToSpeechService,
     private readonly hearing: SpeechToTextService,
     private readonly llm: LlmService,
+    private readonly executions: ScenarioExecutionsService,
     private readonly config: ConfigService,
   ) {}
 
@@ -53,7 +59,12 @@ export class TelephonyService {
     if (!scenario) return sayTwiml(NOT_READY);
     await this.prisma.phoneCall.update({ where: { id: callId }, data: { scenarioId: scenario.id } });
     const token = mintCallToken(this.secret(), callId);
-    this.pending.set(callId, { graph: scenario.graph, expires: Date.now() + 60_000 });
+    this.pending.set(callId, {
+      graph: scenario.graph,
+      scenarioId: scenario.id,
+      startedById: scenario.startedById,
+      expires: Date.now() + 60_000,
+    });
     const streamUrl = `${input.origin.replace(/^http/, 'ws')}/telephony/twilio/stream`;
     return streamTwiml(streamUrl, token);
   }
@@ -67,11 +78,21 @@ export class TelephonyService {
       socket.close(1008, 'The Twilio signature is not valid.');
       return;
     }
-    const session = await this.claim(socket);
-    if (!session) return;
+    const claimed = await this.claim(socket);
+    if (!claimed) return;
+    const { session, pending } = claimed;
     socket.on('message', (data) => session.receive(String(data)));
     socket.on('close', () => session.hangUp());
-    await session.run();
+    const log = await this.openLog(pending);
+    session.useLog(log);
+    try {
+      await session.run();
+      const outcome = session.outcome();
+      await log.finish(outcome.reachedEnd ? ExecutionStatus.FINISHED : ExecutionStatus.STOPPED);
+    } catch (error) {
+      this.logger.warn(`Phone scenario failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+      await log.finish(ExecutionStatus.FAILED, error instanceof Error ? error.message : 'The call failed.');
+    }
   }
 
   list() {
@@ -90,7 +111,7 @@ export class TelephonyService {
   }
 
   private claim(socket: WebSocket) {
-    return new Promise<PhoneScenarioSession | null>((resolve) => {
+    return new Promise<{ session: PhoneScenarioSession; pending: PendingCall } | null>((resolve) => {
       const timer = setTimeout(() => {
         socket.close(1008, 'The stream did not start.');
         resolve(null);
@@ -113,27 +134,41 @@ export class TelephonyService {
           return;
         }
         this.pending.delete(callId);
-        const session = new PhoneScenarioSession(socket, pending.graph, this.deps());
+        const session = new PhoneScenarioSession(socket, pending.graph, this.deps(), silentLog);
         session.receive(String(data));
-        resolve(session);
+        resolve({ session, pending });
       };
       socket.on('message', onMessage);
     });
   }
 
+  private async openLog(pending: PendingCall) {
+    try {
+      const executionId = await this.executions.openPhone({
+        scenarioId: pending.scenarioId,
+        startedById: pending.startedById,
+        graph: pending.graph,
+      });
+      return new PhoneCallLog(executionId, this.executions);
+    } catch (error) {
+      this.logger.warn(`Could not open a phone execution: ${error instanceof Error ? error.message : 'unknown error'}`);
+      return silentLog;
+    }
+  }
+
   private deps(): CallDeps {
     return {
-      speak: (modelId, text) => this.speech.speakPhone(modelId, text),
-      transcribe: async (modelId, wav) => {
-        const result = await this.hearing.transcribe(modelId, { buffer: wav, size: wav.length, mimetype: 'audio/wav', originalname: 'caller.wav' }, null);
+      speak: (modelId, text, execution) => this.speech.speakPhone(modelId, text, execution),
+      transcribe: async (modelId, wav, execution) => {
+        const result = await this.hearing.transcribe(modelId, { buffer: wav, size: wav.length, mimetype: 'audio/wav', originalname: 'caller.wav' }, execution);
         return typeof result === 'string' ? result : result.text;
       },
-      complete: async (modelId, input) => {
-        const turn = await this.llm.complete(modelId, input, null);
+      complete: async (modelId, input, execution) => {
+        const turn = await this.llm.complete(modelId, input, execution);
         return { reply: turn.reply, inquiry: turn.inquiry, phase: turn.phase, topicId: turn.topicId };
       },
-      judgeClosing: async (modelId, question, answer) => {
-        const result = await this.llm.judgeClosing(modelId, { question, answer }, null);
+      judgeClosing: async (modelId, question, answer, execution) => {
+        const result = await this.llm.judgeClosing(modelId, { question, answer }, execution);
         return result.outcome;
       },
     };
@@ -142,10 +177,10 @@ export class TelephonyService {
   private async publishedScenario(to: string) {
     const number = await this.prisma.phoneNumber.findUnique({
       where: { e164: to },
-      select: { scenario: { select: { id: true, active: true, graph: true } } },
+      select: { scenario: { select: { id: true, active: true, graph: true, createdById: true } } },
     });
     if (!number?.scenario?.active) return null;
-    return { id: number.scenario.id, graph: readScenarioGraph(number.scenario.graph) };
+    return { id: number.scenario.id, startedById: number.scenario.createdById, graph: readScenarioGraph(number.scenario.graph) };
   }
 
   private secret() {

@@ -40,6 +40,11 @@ enum ExecutionStatus {
   FAILED
 }
 
+enum ExecutionSource {
+  PLAY
+  PHONE
+}
+
 enum ExecutionAudioKind {
   CALLER
   MIX
@@ -158,6 +163,7 @@ model ScenarioExecution {
   startedById    String          @map("started_by") @db.Uuid
   startedBy      User            @relation(fields: [startedById], references: [id], onDelete: Restrict)
   status         ExecutionStatus @default(RUNNING)
+  source         ExecutionSource @default(PLAY)
   startedAt      DateTime        @default(now()) @map("started_at")
   endedAt        DateTime?       @map("ended_at")
   lastActivityAt DateTime        @default(now()) @map("last_activity_at")

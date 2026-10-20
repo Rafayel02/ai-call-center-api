@@ -128,13 +128,43 @@ export class TextToSpeechService {
   }
 
   /** Raw 8 kHz μ-law for a live phone call. It is not the cached mp3 clip. */
-  async speakPhone(id: string, text: string): Promise<Buffer> {
+  async speakPhone(id: string, text: string, execution: ExecutionContext | null = null): Promise<Buffer> {
     const spoken = text.trim();
     if (!spoken) throw new BadRequestException('Enter the text to speak.');
     const model = await this.findOrThrow(id);
     if (!model.enabled) throw new BadRequestException('This model is disabled.');
     const provider = this.providers.get(model.provider);
-    return provider.speak(model.config as Record<string, unknown>, spoken, 'ulaw_8000');
+    const config = model.config as Record<string, unknown>;
+    const identity = provider.toPublic(config);
+    const snapshot = {
+      modelId: model.id,
+      modelName: model.name,
+      provider: model.provider,
+      providerModel: typeof identity.modelId === 'string' ? identity.modelId : '',
+      voiceId: typeof identity.voiceId === 'string' ? identity.voiceId : '',
+      voiceName: typeof identity.voiceName === 'string' ? identity.voiceName : '',
+    };
+    const started = Date.now();
+    try {
+      const audio = await provider.speak(config, spoken, 'ulaw_8000');
+      await this.executions.recordSpeech(execution, {
+        model: snapshot,
+        text: spoken,
+        latencyMs: Date.now() - started,
+        audio,
+        mimeType: 'audio/basic',
+        cached: false,
+      });
+      return audio;
+    } catch (error) {
+      await this.executions.recordSpeech(execution, {
+        model: snapshot,
+        text: spoken,
+        latencyMs: Date.now() - started,
+        error: error instanceof Error ? error.message : 'Speech failed.',
+      });
+      throw error;
+    }
   }
 
   async speak(id: string, text: string, execution: ExecutionContext | null = null) {

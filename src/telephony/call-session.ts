@@ -1,5 +1,7 @@
 import { WebSocket } from 'ws';
+import { ExecutionContext, SpokenKind } from '../scenario-executions/execution-context';
 import { ScenarioGraph, ScenarioGraphNode } from '../scenarios/scenario-graph';
+import { CallLog } from './call-log';
 import { decodeUlaw, pcmWav, rms } from './ulaw';
 
 const FRAME = 160;
@@ -15,13 +17,14 @@ interface Turn {
 }
 
 export interface CallDeps {
-  speak(modelId: string, text: string): Promise<Buffer>;
-  transcribe(modelId: string, wav: Buffer): Promise<string>;
+  speak(modelId: string, text: string, execution: ExecutionContext | null): Promise<Buffer>;
+  transcribe(modelId: string, wav: Buffer, execution: ExecutionContext | null): Promise<string>;
   complete(
     modelId: string,
     input: { messages: Array<{ role: 'user' | 'assistant'; content: string }>; note?: string; topics?: Array<{ id: string; description: string }>; defaultTopicId?: string; closingReturn?: boolean },
+    execution: ExecutionContext | null,
   ): Promise<Turn>;
-  judgeClosing(modelId: string, question: string, answer: string): Promise<'questions' | 'done'>;
+  judgeClosing(modelId: string, question: string, answer: string, execution: ExecutionContext | null): Promise<'questions' | 'done'>;
 }
 
 interface Inbound {
@@ -40,14 +43,31 @@ export class PhoneScenarioSession {
   private markWait: ((name: string) => void) | null = null;
   private messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
   private topicId: string | null = null;
+  private topicLabel: string | null = null;
+  private inquiry: string | null = null;
   private resume = false;
   private closingReturns = 0;
+  private reachedEnd = false;
+  private utteranceStartMs = 0;
+  private utteranceDurationMs = 0;
 
   constructor(
     private readonly socket: WebSocket,
     private readonly graph: ScenarioGraph,
     private readonly deps: CallDeps,
+    private log: CallLog,
   ) {}
+
+  useLog(log: CallLog) {
+    this.log = log;
+  }
+
+  outcome() {
+    this.log.inquiry = this.inquiry;
+    this.log.topicId = this.topicId;
+    this.log.topicLabel = this.topicLabel;
+    return { reachedEnd: this.reachedEnd };
+  }
 
   receive(raw: string) {
     let message: Inbound;
@@ -57,8 +77,10 @@ export class PhoneScenarioSession {
       return;
     }
     if (message.event === 'start' && message.start?.streamSid) this.streamSid = message.start.streamSid;
-    if (message.event === 'media' && message.media?.payload && !this.playing) {
-      this.samples.push(decodeUlaw(Buffer.from(message.media.payload, 'base64')));
+    if (message.event === 'media' && message.media?.payload) {
+      const decoded = decodeUlaw(Buffer.from(message.media.payload, 'base64'));
+      this.log.caller(decoded);
+      if (!this.playing) this.samples.push(decoded);
     }
     if (message.event === 'mark' && message.mark?.name) this.markWait?.(message.mark.name);
     if (message.event === 'stop') this.closed = true;
@@ -78,13 +100,14 @@ export class PhoneScenarioSession {
         if (!node || node.type === 'end' || node.type === 'start') break;
         seen.add(nodeId);
         if (node.type === 'tts') {
-          await this.speak(node.data.modelId, node.data.text);
+          await this.speak(node.data.modelId, node.data.text, node.id, 'step');
           nodeId = this.next(node.id, null);
         } else if (node.type === 'loop') {
           const accepted = await this.loop(node);
           nodeId = accepted ? this.next(node.id, null) : null;
         } else if (node.type === 'switch') {
           const topic = node.data.topics.find((item) => item.id === this.topicId) ?? node.data.topics.find((item) => item.isDefault);
+          if (topic) this.topicLabel = topic.description.trim() || null;
           nodeId = topic ? this.next(node.id, topic.id) : null;
         } else if (node.type === 'closing') {
           const outcome = await this.closing(node);
@@ -98,8 +121,13 @@ export class PhoneScenarioSession {
         }
       }
     } finally {
+      this.reachedEnd = !this.closed;
       if (this.socket.readyState === WebSocket.OPEN) this.socket.close(1000, 'Call ended.');
     }
+  }
+
+  private heardContext(nodeId: string) {
+    return this.log.context(nodeId, null, { startedMs: this.utteranceStartMs, durationMs: this.utteranceDurationMs });
   }
 
   private async loop(node: Extract<ScenarioGraphNode, { type: 'loop' }>) {
@@ -115,26 +143,31 @@ export class PhoneScenarioSession {
       } else {
         const heard = await this.listen(silenceSeconds);
         if (!heard || this.closed) return false;
-        text = await this.deps.transcribe(sttModelId, pcmWav(heard));
+        text = await this.deps.transcribe(sttModelId, pcmWav(heard), this.heardContext(node.id));
         if (!text.trim()) continue;
         this.messages.push({ role: 'user', content: text.trim() });
       }
       turns += 1;
       const filler = fillers.map((line) => line.trim()).filter(Boolean);
-      const delay = filler.length > 0 ? this.speak(ttsModelId, filler[Math.floor(Math.random() * filler.length)]) : Promise.resolve();
+      const delay = filler.length > 0 ? this.speak(ttsModelId, filler[Math.floor(Math.random() * filler.length)], node.id, 'delay') : Promise.resolve();
       const topics = this.topicsAhead(node.id);
-      const turnPromise = this.deps.complete(llmModelId, {
-        messages: this.messages,
-        ...(fromClosing ? { closingReturn: true } : {}),
-        ...(topics ?? {}),
-      });
+      const turnPromise = this.deps.complete(
+        llmModelId,
+        {
+          messages: this.messages,
+          ...(fromClosing ? { closingReturn: true } : {}),
+          ...(topics ?? {}),
+        },
+        this.log.context(node.id, null),
+      );
       await delay;
       const turn = await turnPromise;
       if (turn.reply.trim()) {
         this.messages.push({ role: 'assistant', content: turn.reply });
-        await this.speak(ttsModelId, turn.reply);
+        await this.speak(ttsModelId, turn.reply, node.id, 'reply');
       }
       if (turn.phase === 'accepted' && turn.inquiry) {
+        this.inquiry = turn.inquiry;
         this.topicId = turn.topicId;
         return true;
       }
@@ -145,19 +178,23 @@ export class PhoneScenarioSession {
   private async closing(node: Extract<ScenarioGraphNode, { type: 'closing' }>) {
     const { ttsModelId, sttModelId, llmModelId, text, silenceSeconds } = node.data;
     if (!ttsModelId || !sttModelId || !llmModelId) return 'done' as const;
-    await this.speak(ttsModelId, text);
+    await this.speak(ttsModelId, text, node.id, 'step');
     this.messages.push({ role: 'assistant', content: text });
     const heard = await this.listen(silenceSeconds);
     if (!heard) return 'done' as const;
-    const answer = (await this.deps.transcribe(sttModelId, pcmWav(heard))).trim();
+    const answer = (await this.deps.transcribe(sttModelId, pcmWav(heard), this.heardContext(node.id))).trim();
     if (!answer) return 'done' as const;
     this.messages.push({ role: 'user', content: answer });
-    return this.deps.judgeClosing(llmModelId, text, answer);
+    return this.deps.judgeClosing(llmModelId, text, answer, this.log.context(node.id, null));
   }
 
-  private async speak(modelId: string | null, text: string) {
+  private async speak(modelId: string | null, text: string, nodeId: string, kind: SpokenKind) {
     if (!modelId || !text.trim() || this.closed) return;
-    const audio = await this.deps.speak(modelId, text);
+    const ctx = this.log.context(nodeId, kind);
+    const audio = await this.deps.speak(modelId, text, ctx);
+    const startMs = this.log.now();
+    this.log.agent(decodeUlaw(audio));
+    await this.log.played({ nodeId, text, kind, startMs, endMs: startMs + Math.round(audio.length / 8) });
     this.playing = true;
     this.samples = [];
     try {
@@ -189,10 +226,13 @@ export class PhoneScenarioSession {
     let voiced = 0;
     let quiet = 0;
     let started = false;
+    let ticks = 0;
     const uttered: Int16Array[] = [];
     this.samples = [];
     return new Promise<Int16Array | null>((resolve) => {
       const timer = setInterval(() => {
+        ticks += 1;
+        if (ticks % 1500 === 0) void this.log.touch();
         if (this.closed) {
           clearInterval(timer);
           resolve(null);
@@ -206,6 +246,7 @@ export class PhoneScenarioSession {
             else voiced = 0;
             if (voiced >= START_FRAMES) {
               started = true;
+              this.utteranceStartMs = Math.max(0, this.log.now() - START_FRAMES * 20);
               uttered.push(frame);
             }
           } else {
@@ -213,6 +254,7 @@ export class PhoneScenarioSession {
             quiet = loud ? 0 : quiet + 1;
             if (quiet >= quietNeeded) {
               clearInterval(timer);
+              this.utteranceDurationMs = Math.max(0, this.log.now() - this.utteranceStartMs);
               resolve(concat(uttered));
               return;
             }

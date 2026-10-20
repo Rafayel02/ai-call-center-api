@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
-import { ExecutionAudioKind, ExecutionStatus, Prisma } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
+import { ExecutionAudioKind, ExecutionSource, ExecutionStatus, Prisma } from '@prisma/client';
 import { inquirySystemPrompt, PromptTopic } from '../llm/inquiry-turn';
 import { ModelPricingService } from '../model-pricing/model-pricing.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -36,6 +37,7 @@ const summarySelect = {
   id: true,
   scenarioId: true,
   status: true,
+  source: true,
   startedAt: true,
   endedAt: true,
   durationMs: true,
@@ -165,6 +167,53 @@ export class ScenarioExecutionsService implements OnModuleInit {
     } catch (error) {
       this.logger.warn(`Could not price existing executions: ${error instanceof Error ? error.message : 'unknown error'}`);
     }
+  }
+
+  /** A live phone call. Existing rows and Play stay tagged as Play. */
+  async openPhone(input: { scenarioId: string; startedById: string; graph: unknown }) {
+    const row = await this.prisma.scenarioExecution.create({
+      data: {
+        id: randomUUID(),
+        scenarioId: input.scenarioId,
+        startedById: input.startedById,
+        source: ExecutionSource.PHONE,
+        graph: input.graph as Prisma.InputJsonValue,
+      },
+      select: { id: true },
+    });
+    return row.id;
+  }
+
+  async completePhone(
+    id: string,
+    input: {
+      status: Exclude<ExecutionStatus, 'RUNNING'>;
+      durationMs: number;
+      inquiry: string | null;
+      topicId: string | null;
+      topicLabel: string | null;
+      errorMessage: string | null;
+      wav: Buffer;
+      peaks: number[];
+    },
+  ) {
+    const existing = await this.prisma.scenarioExecution.findUnique({ where: { id }, select: { status: true } });
+    if (!existing || existing.status !== ExecutionStatus.RUNNING) return;
+    if (input.wav.length > 0 && input.wav.length <= MAX_EXECUTION_AUDIO_BYTES) {
+      await this.upsertTrack(id, ExecutionAudioKind.MIX, { buffer: input.wav, size: input.wav.length, mimetype: 'audio/wav' });
+      await this.prisma.scenarioExecution.update({
+        where: { id },
+        data: { peaks: input.peaks, mixMime: 'audio/wav' },
+      });
+    }
+    await this.finish(id, {
+      status: input.status,
+      durationMs: input.durationMs,
+      inquiry: input.inquiry,
+      topicId: input.topicId,
+      topicLabel: input.topicLabel,
+      errorMessage: input.errorMessage,
+    });
   }
 
   async create(dto: CreateScenarioExecutionDto, userId: string) {
@@ -796,6 +845,7 @@ export class ScenarioExecutionsService implements OnModuleInit {
       id: row.id,
       scenarioId: row.scenarioId,
       status: row.status,
+      source: row.source,
       startedAt: row.startedAt,
       endedAt: row.endedAt,
       durationMs: row.durationMs,
