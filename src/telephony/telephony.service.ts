@@ -26,6 +26,7 @@ interface PendingCall {
   graph: ScenarioGraph;
   languages: ScenarioLanguage[];
   languageModels: ScenarioLanguageModels;
+  callSid: string;
   askLanguage: boolean;
   chosenLanguage: ScenarioLanguage | null;
   log: PhoneCallLog | null;
@@ -62,7 +63,7 @@ export class TelephonyService {
     if (!scenario) return sayTwiml(NOT_READY);
     await this.prisma.phoneCall.update({ where: { id: callId }, data: { scenarioId: scenario.id } });
     if (scenario.askLanguage && scenario.languages.some((code) => !scenario.languageModels[code]?.ttsModelId)) return sayTwiml(NOT_READY);
-    await this.hold(callId, scenario);
+    await this.hold(callId, callSid, scenario);
     return this.streamFor(input.origin, callId);
   }
 
@@ -128,7 +129,14 @@ export class TelephonyService {
     } catch (error) {
       this.logger.warn(`Phone scenario failed: ${error instanceof Error ? error.message : 'unknown error'}`);
       await log.finish(ExecutionStatus.FAILED, error instanceof Error ? error.message : 'The call failed.');
+    } finally {
+      await this.endCall(pending.callSid);
     }
+  }
+
+  async done(input: { origin: string; path: string; params: Record<string, string>; signature: string | undefined }) {
+    await this.assertTwilio(input);
+    return hangupTwiml();
   }
 
   list() {
@@ -194,7 +202,7 @@ export class TelephonyService {
     }
   }
 
-  private async hold(callId: string, scenario: Awaited<ReturnType<TelephonyService['publishedScenario']>> & object) {
+  private async hold(callId: string, callSid: string, scenario: Awaited<ReturnType<TelephonyService['publishedScenario']>> & object) {
     let log: PhoneCallLog | null = null;
     if (scenario.askLanguage) {
       try {
@@ -212,6 +220,7 @@ export class TelephonyService {
       graph: scenario.graph,
       languages: scenario.languages,
       languageModels: scenario.languageModels,
+      callSid,
       askLanguage: scenario.askLanguage,
       chosenLanguage: null,
       log,
@@ -234,7 +243,26 @@ export class TelephonyService {
 
   private streamFor(origin: string, callId: string) {
     const streamUrl = `${origin.replace(/^http/, 'ws')}/telephony/twilio/stream`;
-    return streamTwiml(streamUrl, mintCallToken(this.secret(), callId));
+    return streamTwiml(streamUrl, mintCallToken(this.secret(), callId), `${origin}/telephony/twilio/done`);
+  }
+
+  private async endCall(callSid: string) {
+    try {
+      const accounts = await this.streaming.credentials();
+      for (const account of accounts) {
+        const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(account.accountSid)}/Calls/${encodeURIComponent(callSid)}.json`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Basic ${Buffer.from(`${account.accountSid}:${account.authToken}`).toString('base64')}`,
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: new URLSearchParams({ Status: 'completed' }),
+        });
+        if (response.ok) return;
+      }
+    } catch (error) {
+      this.logger.warn(`Could not end the phone call: ${error instanceof Error ? error.message : 'unknown error'}`);
+    }
   }
 
   private async assertTwilio(input: { origin: string; path: string; params: Record<string, string>; signature: string | undefined }) {

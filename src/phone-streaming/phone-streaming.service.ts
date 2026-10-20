@@ -91,11 +91,18 @@ export class PhoneStreamingService {
 
   /** Auth tokens of enabled Twilio accounts. A webhook is accepted when any of them signed it. */
   async authTokens() {
+    return (await this.credentials()).map((account) => account.authToken);
+  }
+
+  async credentials() {
     const rows = await this.prisma.phoneStreamingService.findMany({
       where: { provider: PhoneStreamProvider.TWILIO, enabled: true },
       select: { config: true },
     });
-    return rows.map((row) => decryptSecret(this.readStored(row.config).authToken, this.key()));
+    return rows.map((row) => {
+      const stored = this.readStored(row.config);
+      return { accountSid: stored.accountSid, authToken: decryptSecret(stored.authToken, this.key()) };
+    });
   }
 
   private async probe(sid: string, token: string) {

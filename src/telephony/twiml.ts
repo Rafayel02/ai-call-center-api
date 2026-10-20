@@ -8,8 +8,8 @@ export function sayTwiml(text: string) {
   return `${XML_HEAD}<Response><Say>${escapeXml(text)}</Say><Hangup/></Response>`;
 }
 
-export function streamTwiml(streamUrl: string, token: string) {
-  return `${XML_HEAD}<Response><Connect><Stream url="${escapeXml(streamUrl)}"><Parameter name="token" value="${escapeXml(token)}"/></Stream></Connect><Hangup/></Response>`;
+export function streamTwiml(streamUrl: string, token: string, actionUrl: string) {
+  return `${XML_HEAD}<Response><Connect action="${escapeXml(actionUrl)}" method="POST"><Stream url="${escapeXml(streamUrl)}"><Parameter name="token" value="${escapeXml(token)}"/></Stream></Connect></Response>`;
 }
 
 export function hangupTwiml() {

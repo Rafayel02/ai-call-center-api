@@ -24,6 +24,20 @@ export class TelephonyController {
     });
   }
 
+  @Post('done')
+  @SkipThrottle()
+  @HttpCode(200)
+  @Header('Content-Type', 'text/xml; charset=utf-8')
+  done(@Req() request: { originalUrl: string; headers: Record<string, string | string[] | undefined> }, @Body() body: Record<string, unknown>) {
+    const header = request.headers['x-twilio-signature'];
+    return this.telephony.done({
+      origin: publicOrigin(request.headers),
+      path: request.originalUrl,
+      params: formParams(body),
+      signature: Array.isArray(header) ? header[0] : header,
+    });
+  }
+
   @Post('language')
   @SkipThrottle()
   @HttpCode(200)
