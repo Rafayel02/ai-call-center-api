@@ -30,20 +30,38 @@ export function readOpenAiPrices(markdown: string): Record<string, string> {
   return prices;
 }
 
-export function readElevenLabsPrices(html: string): Record<string, string> {
+export function readElevenLabsPrices(page: string): Record<string, string> {
+  const fromMarkdown = readElevenLabsMarkdown(page);
+  return Object.keys(fromMarkdown).length > 0 ? fromMarkdown : readElevenLabsHtml(page);
+}
+
+function readElevenLabsMarkdown(markdown: string): Record<string, string> {
+  const prices: Record<string, string> = {};
+  const pattern = /^### ([^\n]+)\n(?:(?!^### )[^\n]*\n){0,12}?\$([0-9]+(?:\.[0-9]+)?)\n+Price per ([^\n]+)/gm;
+  for (const match of markdown.matchAll(pattern)) {
+    assignElevenLabs(prices, match[1].trim(), match[2], match[3].trim());
+  }
+  return prices;
+}
+
+function readElevenLabsHtml(html: string): Record<string, string> {
   const prices: Record<string, string> = {};
   const pattern = /tw-type-2xl">\$([0-9]+(?:\.[0-9]+)?)[\s\S]{0,240}?tw-type-xs">([^<]+)</g;
   for (const match of html.matchAll(pattern)) {
-    const amount = match[1];
     const unit = match[2]?.trim() ?? '';
-    if (!amount || !/^Price per /i.test(unit)) continue;
+    if (!/^Price per /i.test(unit)) continue;
     const name = cardName(html.slice(Math.max(0, (match.index ?? 0) - 900), match.index));
-    const modelIds = ELEVENLABS_MODELS[name];
-    if (!modelIds) continue;
-    const label = `$${amount} ${unit.replace(/^Price\s+/i, '')}`;
-    for (const modelId of modelIds) prices[modelId] = label;
+    assignElevenLabs(prices, name, match[1], unit.replace(/^Price\s+/i, ''));
   }
   return prices;
+}
+
+function assignElevenLabs(prices: Record<string, string>, name: string, amount: string | undefined, unit: string) {
+  const modelIds = ELEVENLABS_MODELS[name];
+  if (!modelIds || !amount || !unit) return;
+  const phrase = /^per\b/i.test(unit) ? unit : `per ${unit}`;
+  const label = `$${amount} ${phrase}`;
+  for (const modelId of modelIds) prices[modelId] = label;
 }
 
 export function readHiSpeechPrice(html: string): string | null {
@@ -51,9 +69,12 @@ export function readHiSpeechPrice(html: string): string | null {
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/g, ' ')
     .replace(/\s+/g, ' ');
-  const match = text.match(/transcription\D{0,40}(\d+)\s+credits?\s+per\s+second/i) ?? text.match(/(\d+)\s+credits?\s+per\s+second of audio/i);
-  if (!match) return null;
-  return match[1] === '1' ? '1 credit per second' : `${match[1]} credits per second`;
+  const credits = text.match(/transcription\D{0,40}(\d+)\s+credits?\s+per\s+second/i) ?? text.match(/(\d+)\s+credits?\s+per\s+second of audio/i);
+  const usage = !credits ? null : credits[1] === '1' ? '1 credit per second' : `${credits[1]} credits per second`;
+  const dollars = text.match(/\$([0-9]+(?:\.[0-9]+)?)\s*(?:\([^)]*\))?\s*per hour of transcription/i);
+  if (dollars && usage) return `$${dollars[1]} per hour · ${usage}`;
+  if (dollars) return `$${dollars[1]} per hour`;
+  return usage;
 }
 
 function cardName(before: string) {

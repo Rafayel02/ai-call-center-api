@@ -22,15 +22,50 @@ test('OpenAI prices come from the standard table', () => {
   assert.equal(prices['gpt-4o-mini'], '$0.15 in / $0.60 out per 1M tokens');
 });
 
+const ELEVENLABS_MARKDOWN = `
+### v3 Conversational
+
+Text to Speech
+
+$0.04
+
+Price per 1K characters
+
+### v3
+
+Text to Speech
+
+$0.08
+
+Price per 1K characters
+
+### Scribe v2 Medical
+
+Speech to Text
+
+$0.48
+
+Price per hour
+
+### Scribe v2
+
+Speech to Text
+
+$0.22
+
+Price per hour
+
+### Flash / Turbo
+
+Text to Speech
+
+$0.04
+
+Price per 1K characters
+`;
+
 test('ElevenLabs cards keep Scribe v2 apart from Scribe v2 Medical', () => {
-  const html = `
-    <div class="tw-z-10">v3 Conversational Text to Speech <span class="tw-type-2xl">$0.04</span></div><p class="tw-type-xs">Price per 1K characters</p>
-    <div class="tw-z-10">v3 Text to Speech <span class="tw-type-2xl">$0.08</span></div><p class="tw-type-xs">Price per 1K characters</p>
-    <div class="tw-z-10">Scribe v2 Medical Speech to Text <span class="tw-type-2xl">$0.48</span></div><p class="tw-type-xs">Price per hour</p>
-    <div class="tw-z-10">Scribe v2 Speech to Text <span class="tw-type-2xl">$0.22</span></div><p class="tw-type-xs">Price per hour</p>
-    <div class="tw-z-10">Flash / Turbo Text to Speech <span class="tw-type-2xl">$0.04</span></div><p class="tw-type-xs">Price per 1K characters</p>
-  `;
-  const prices = readElevenLabsPrices(html);
+  const prices = readElevenLabsPrices(ELEVENLABS_MARKDOWN);
   assert.equal(prices.eleven_v3, '$0.08 per 1K characters');
   assert.equal(prices.eleven_v3_conversational, '$0.04 per 1K characters');
   assert.equal(prices.scribe_v2, '$0.22 per hour');
@@ -39,10 +74,20 @@ test('ElevenLabs cards keep Scribe v2 apart from Scribe v2 Medical', () => {
   assert.equal(prices.scribe_v1, undefined);
 });
 
-test('HiSpeech price is the published credit rate', () => {
+test('ElevenLabs HTML cards still parse when the markdown page is unavailable', () => {
+  const html = `
+    <div class="tw-z-10">v3 Text to Speech <span class="tw-type-2xl">$0.08</span></div><p class="tw-type-xs">Price per 1K characters</p>
+  `;
+  assert.equal(readElevenLabsPrices(html).eleven_v3, '$0.08 per 1K characters');
+});
+
+test('HiSpeech price is the published credit price', () => {
   assert.equal(
-    readHiSpeechPrice('<li>Subtitle files — 4 credits per second.</li><li>Transcription — 1 credit per second of audio.</li>'),
-    '1 credit per second',
+    readHiSpeechPrice(
+      'Subtitle files — 4 credits per second. Transcription — 1 credit per second of audio. Top up at $1.89 (690 ֏) per hour of transcription — 3,600 credits per block.',
+    ),
+    '$1.89 per hour · 1 credit per second',
   );
+  assert.equal(readHiSpeechPrice('<li>Transcription — 1 credit per second of audio.</li>'), '1 credit per second');
   assert.equal(readHiSpeechPrice('<p>No rate published.</p>'), null);
 });
