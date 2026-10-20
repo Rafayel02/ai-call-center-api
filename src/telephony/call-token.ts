@@ -6,8 +6,8 @@ function sign(secret: string, body: string) {
   return createHmac('sha256', secret).update(body, 'utf8').digest('base64url');
 }
 
-export function mintCallToken(secret: string, callId: string, now = Date.now()) {
-  const body = `${callId}.${now + TTL_MS}`;
+export function mintCallToken(secret: string, callId: string, now = Date.now(), ttlMs = TTL_MS) {
+  const body = `${callId}.${now + ttlMs}`;
   return `${body}.${sign(secret, body)}`;
 }
 

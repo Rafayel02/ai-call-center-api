@@ -53,6 +53,7 @@ export class PhoneScenarioSession {
   private utteranceStartMs = 0;
   private utteranceDurationMs = 0;
   private language: ScenarioLanguage;
+  private languageLocked = false;
   private pendingDigit: string | null = null;
   private digitWait: ((digit: string | null) => void) | null = null;
 
@@ -64,8 +65,10 @@ export class PhoneScenarioSession {
     private readonly languages: ScenarioLanguage[] = ['en'],
     private readonly languageModels: ScenarioLanguageModels = {},
     private readonly askLanguage = false,
+    chosenLanguage: ScenarioLanguage | null = null,
   ) {
-    this.language = languages[0] ?? 'en';
+    this.language = chosenLanguage ?? languages[0] ?? 'en';
+    this.languageLocked = Boolean(chosenLanguage);
   }
 
   useLog(log: CallLog) {
@@ -171,7 +174,7 @@ export class PhoneScenarioSession {
   }
 
   private async chooseLanguage() {
-    if (!this.askLanguage || this.languages.length === 0 || this.closed) return;
+    if (this.languageLocked || !this.askLanguage || this.languages.length === 0 || this.closed) return;
     if (this.languages.some((code) => !this.languageModels[code]?.ttsModelId)) {
       this.closed = true;
       return;

@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { IncomingMessage } from 'node:http';
@@ -15,8 +15,9 @@ import { PhoneCallLog, silentLog } from './call-log';
 import { mintCallToken, readCallToken } from './call-token';
 import { CallDeps, PhoneScenarioSession } from './call-session';
 import { isTwilioSignature } from './twilio-signature';
-import { ScenarioLanguage, ScenarioLanguageModels, isScenarioLanguage, languageModelsFor } from '../scenarios/scenario-languages';
-import { sayTwiml, streamTwiml } from './twiml';
+import { ScenarioLanguage, ScenarioLanguageModels, isScenarioLanguage, languageKeyLine, languageModelsFor } from '../scenarios/scenario-languages';
+import { decodeUlaw, pcmWav } from './ulaw';
+import { gatherTwiml, hangupTwiml, sayTwiml, streamTwiml } from './twiml';
 
 const MISSING = 'Add a Twilio phone streaming service before taking phone calls.';
 const NOT_READY = 'This number is not ready to take calls.';
@@ -26,6 +27,10 @@ interface PendingCall {
   languages: ScenarioLanguage[];
   languageModels: ScenarioLanguageModels;
   askLanguage: boolean;
+  chosenLanguage: ScenarioLanguage | null;
+  log: PhoneCallLog | null;
+  promptWav: Array<Buffer | undefined>;
+  abandon: ReturnType<typeof setTimeout> | null;
   scenarioId: string;
   startedById: string;
   expires: number;
@@ -48,13 +53,7 @@ export class TelephonyService {
   ) {}
 
   async answer(input: { origin: string; path: string; params: Record<string, string>; signature: string | undefined }) {
-    const tokens = await this.streaming.authTokens();
-    if (tokens.length === 0) throw new ServiceUnavailableException(MISSING);
-    const url = `${input.origin}${input.path}`;
-    if (!tokens.some((token) => isTwilioSignature(token, url, input.params, input.signature))) {
-      this.logger.warn(`Refused a voice webhook with a bad Twilio signature for ${url}`);
-      throw new ForbiddenException('The Twilio signature is not valid.');
-    }
+    await this.assertTwilio(input);
     const callSid = input.params.CallSid?.trim();
     const to = input.params.To?.trim();
     if (!callSid || !to) throw new ForbiddenException('The request is missing CallSid or To.');
@@ -62,18 +61,52 @@ export class TelephonyService {
     const scenario = await this.publishedScenario(to);
     if (!scenario) return sayTwiml(NOT_READY);
     await this.prisma.phoneCall.update({ where: { id: callId }, data: { scenarioId: scenario.id } });
-    const token = mintCallToken(this.secret(), callId);
-    this.pending.set(callId, {
-      graph: scenario.graph,
-      languages: scenario.languages,
-      languageModels: scenario.languageModels,
-      askLanguage: scenario.askLanguage,
-      scenarioId: scenario.id,
-      startedById: scenario.startedById,
-      expires: Date.now() + 60_000,
-    });
-    const streamUrl = `${input.origin.replace(/^http/, 'ws')}/telephony/twilio/stream`;
-    return streamTwiml(streamUrl, token);
+    if (scenario.askLanguage && scenario.languages.some((code) => !scenario.languageModels[code]?.ttsModelId)) return sayTwiml(NOT_READY);
+    const pending = await this.hold(callId, scenario);
+    if (!scenario.askLanguage) return this.streamFor(input.origin, callId);
+    const promptToken = mintCallToken(this.secret(), callId, Date.now(), 180_000);
+    const plays = scenario.languages.map((_, index) => `${input.origin}/telephony/twilio/prompt/${promptToken}/${index}`);
+    pending.expires = Date.now() + 180_000;
+    return gatherTwiml(`${input.origin}/telephony/twilio/language`, plays);
+  }
+
+  async language(input: { origin: string; path: string; params: Record<string, string>; signature: string | undefined }) {
+    await this.assertTwilio(input);
+    const callSid = input.params.CallSid?.trim();
+    const call = callSid ? await this.prisma.phoneCall.findUnique({ where: { callSid }, select: { id: true } }) : null;
+    const pending = call ? this.pending.get(call.id) : undefined;
+    const digit = input.params.Digits?.trim() ?? '';
+    const chosen = digit && pending ? pending.languages[Number(digit) - 1] : undefined;
+    this.logger.log(`Phone language key ${digit || 'none'}`);
+    if (!call || !pending || !chosen) {
+      if (pending?.abandon) clearTimeout(pending.abandon);
+      if (pending?.log) await pending.log.finish(ExecutionStatus.STOPPED);
+      if (call) this.pending.delete(call.id);
+      return hangupTwiml();
+    }
+    pending.chosenLanguage = chosen;
+    pending.expires = Date.now() + 60_000;
+    return this.streamFor(input.origin, call.id);
+  }
+
+  async prompt(token: string, index: number) {
+    const callId = readCallToken(this.secret(), token);
+    const pending = callId ? this.pending.get(callId) : undefined;
+    const language = pending?.languages[index];
+    const modelId = language ? pending?.languageModels[language]?.ttsModelId : null;
+    if (!pending || !language || !modelId || pending.expires < Date.now()) throw new NotFoundException('That prompt is not available.');
+    const cached = pending.promptWav[index];
+    if (cached) return cached;
+    const log = pending.log ?? silentLog;
+    const text = languageKeyLine(language, index);
+    const started = log.now();
+    const audio = await this.speech.speakPhone(modelId, text, log.context('language', 'step'));
+    const samples = decodeUlaw(audio);
+    log.agent(samples);
+    await log.played({ nodeId: 'language', text, kind: 'step', startMs: started, endMs: log.now() });
+    const wav = pcmWav(samples);
+    pending.promptWav[index] = wav;
+    return wav;
   }
 
   async openStream(socket: WebSocket, request: IncomingMessage) {
@@ -140,8 +173,9 @@ export class TelephonyService {
           resolve(null);
           return;
         }
+        if (pending.abandon) clearTimeout(pending.abandon);
         this.pending.delete(callId);
-        const session = new PhoneScenarioSession(socket, pending.graph, this.deps(), silentLog, pending.languages, pending.languageModels, pending.askLanguage);
+        const session = new PhoneScenarioSession(socket, pending.graph, this.deps(), silentLog, pending.languages, pending.languageModels, pending.askLanguage, pending.chosenLanguage);
         session.receive(String(data));
         resolve({ session, pending });
       };
@@ -150,6 +184,7 @@ export class TelephonyService {
   }
 
   private async openLog(pending: PendingCall) {
+    if (pending.log) return pending.log;
     try {
       const executionId = await this.executions.openPhone({
         scenarioId: pending.scenarioId,
@@ -160,6 +195,59 @@ export class TelephonyService {
     } catch (error) {
       this.logger.warn(`Could not open a phone execution: ${error instanceof Error ? error.message : 'unknown error'}`);
       return silentLog;
+    }
+  }
+
+  private async hold(callId: string, scenario: Awaited<ReturnType<TelephonyService['publishedScenario']>> & object) {
+    let log: PhoneCallLog | null = null;
+    if (scenario.askLanguage) {
+      try {
+        const executionId = await this.executions.openPhone({
+          scenarioId: scenario.id,
+          startedById: scenario.startedById,
+          graph: scenario.graph,
+        });
+        log = new PhoneCallLog(executionId, this.executions);
+      } catch (error) {
+        this.logger.warn(`Could not open a phone execution: ${error instanceof Error ? error.message : 'unknown error'}`);
+      }
+    }
+    const pending: PendingCall = {
+      graph: scenario.graph,
+      languages: scenario.languages,
+      languageModels: scenario.languageModels,
+      askLanguage: scenario.askLanguage,
+      chosenLanguage: null,
+      log,
+      promptWav: [],
+      abandon: null,
+      scenarioId: scenario.id,
+      startedById: scenario.startedById,
+      expires: Date.now() + 60_000,
+    };
+    if (log) {
+      pending.abandon = setTimeout(() => {
+        if (this.pending.get(callId) !== pending) return;
+        this.pending.delete(callId);
+        void log.finish(ExecutionStatus.STOPPED);
+      }, 180_000);
+    }
+    this.pending.set(callId, pending);
+    return pending;
+  }
+
+  private streamFor(origin: string, callId: string) {
+    const streamUrl = `${origin.replace(/^http/, 'ws')}/telephony/twilio/stream`;
+    return streamTwiml(streamUrl, mintCallToken(this.secret(), callId));
+  }
+
+  private async assertTwilio(input: { origin: string; path: string; params: Record<string, string>; signature: string | undefined }) {
+    const tokens = await this.streaming.authTokens();
+    if (tokens.length === 0) throw new ServiceUnavailableException(MISSING);
+    const url = `${input.origin}${input.path}`;
+    if (!tokens.some((token) => isTwilioSignature(token, url, input.params, input.signature))) {
+      this.logger.warn(`Refused a Twilio webhook with a bad signature for ${url}`);
+      throw new ForbiddenException('The Twilio signature is not valid.');
     }
   }
 
