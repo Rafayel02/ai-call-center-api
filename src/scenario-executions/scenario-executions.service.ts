@@ -1,9 +1,11 @@
-import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { ExecutionAudioKind, ExecutionStatus, Prisma } from '@prisma/client';
 import { inquirySystemPrompt, PromptTopic } from '../llm/inquiry-turn';
+import { ModelPricingService } from '../model-pricing/model-pricing.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateScenarioExecutionDto, ExecutionEventDto, FinishScenarioExecutionDto } from './dto/scenario-execution.dto';
 import { ExecutionContext } from './execution-context';
+import { priceExecution } from './execution-price';
 import { speechSegments } from './speech-segments';
 
 export const MAX_EXECUTION_AUDIO_BYTES = 30 * 1024 * 1024;
@@ -39,6 +41,8 @@ const summarySelect = {
   topicId: true,
   topicLabel: true,
   errorMessage: true,
+  priceUsd: true,
+  priceComplete: true,
   startedBy: { select: { email: true } },
   audio: { where: { kind: ExecutionAudioKind.MIX }, select: { id: true } },
 } satisfies Prisma.ScenarioExecutionSelect;
@@ -143,10 +147,21 @@ function mp3DurationMs(byteSize: number) {
 }
 
 @Injectable()
-export class ScenarioExecutionsService {
+export class ScenarioExecutionsService implements OnModuleInit {
   private readonly logger = new Logger(ScenarioExecutionsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly pricing: ModelPricingService,
+  ) {}
+
+  async onModuleInit() {
+    try {
+      await this.priceStored();
+    } catch (error) {
+      this.logger.warn(`Could not price existing executions: ${error instanceof Error ? error.message : 'unknown error'}`);
+    }
+  }
 
   async create(dto: CreateScenarioExecutionDto, userId: string) {
     if (!Array.isArray(dto.graph.nodes) || !Array.isArray(dto.graph.edges)) {
@@ -231,6 +246,7 @@ export class ScenarioExecutionsService {
         lastActivityAt: new Date(),
       },
     });
+    await this.priceStored([id]);
     return this.present(await this.findOrThrow(id));
   }
 
@@ -365,6 +381,7 @@ export class ScenarioExecutionsService {
             ...input.model,
             error: input.error || 'The transcript was empty.',
             utteranceStartMs: ctx.utteranceStartedMs,
+            utteranceDurationMs: ctx.utteranceDurationMs,
           }
         : {
             ...input.model,
@@ -385,6 +402,7 @@ export class ScenarioExecutionsService {
       latencyMs: number;
       audio?: Buffer;
       mimeType?: string;
+      cached?: boolean;
       error?: string | null;
     },
   ) {
@@ -411,6 +429,7 @@ export class ScenarioExecutionsService {
         ...input.model,
         text: input.text,
         kind,
+        cached: input.cached === true,
         latencyMs: input.latencyMs,
         durationMs,
       },
@@ -611,6 +630,32 @@ export class ScenarioExecutionsService {
         }),
       ),
     );
+    if (stale.length > 0) await this.priceStored(stale.map((row) => row.id));
+  }
+
+  private async priceStored(ids?: string[]) {
+    if (ids && ids.length === 0) return;
+    const rows = await this.prisma.scenarioExecution.findMany({
+      where: {
+        priceUsd: null,
+        status: { not: ExecutionStatus.RUNNING },
+        ...(ids ? { id: { in: ids } } : {}),
+      },
+      select: { id: true, events: { select: { type: true, payload: true } } },
+    });
+    if (rows.length === 0) return;
+    const catalog = await this.pricing.rates();
+    let stored = 0;
+    for (const row of rows) {
+      const quote = priceExecution(row.events, catalog);
+      if (!quote.persist) continue;
+      const updated = await this.prisma.scenarioExecution.updateMany({
+        where: { id: row.id, priceUsd: null },
+        data: { priceUsd: quote.usd.toFixed(6), priceComplete: quote.complete },
+      });
+      stored += updated.count;
+    }
+    if (stored > 0) this.logger.log(`Stored the price of ${stored} execution${stored === 1 ? '' : 's'}.`);
   }
 
   private async findOrThrow(id: string) {
@@ -649,6 +694,8 @@ export class ScenarioExecutionsService {
       inquiry: row.inquiry,
       topicLabel: row.topicLabel,
       errorMessage: row.errorMessage,
+      priceUsd: row.priceUsd == null ? null : Number(row.priceUsd.toString()),
+      priceComplete: row.priceComplete,
       startedBy: { email: row.startedBy.email },
       hasMix: row.audio.length > 0,
     };

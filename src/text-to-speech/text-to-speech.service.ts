@@ -128,6 +128,7 @@ export class TextToSpeechService {
         latencyMs: Date.now() - started,
         audio: clip.audio,
         mimeType: clip.mimeType,
+        cached: clip.cached,
       });
       return this.audioFile(clip.audio, clip.mimeType);
     } catch (error) {
@@ -156,7 +157,7 @@ export class TextToSpeechService {
     });
     if (cached) {
       this.logger.log(`Reused speech clip for model ${modelId}`);
-      return { audio: Buffer.from(cached.audio), mimeType: cached.mimeType };
+      return { audio: Buffer.from(cached.audio), mimeType: cached.mimeType, cached: true };
     }
 
     const generated = await provider.speak(config, spoken);
@@ -180,9 +181,9 @@ export class TextToSpeechService {
         where: { cacheKey },
         select: { audio: true, mimeType: true },
       });
-      if (winner) return { audio: Buffer.from(winner.audio), mimeType: winner.mimeType };
+      if (winner) return { audio: Buffer.from(winner.audio), mimeType: winner.mimeType, cached: false };
     }
-    return { audio: generated, mimeType: 'audio/mpeg' };
+    return { audio: generated, mimeType: 'audio/mpeg', cached: false };
   }
 
   private audioFile(audio: Buffer, mimeType: string) {
