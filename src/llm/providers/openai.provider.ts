@@ -164,7 +164,7 @@ export class OpenAiProvider implements LlmProviderClient {
     }
     const allowed = request.defaultTopicId ? [...(request.topics ?? []).map((topic) => topic.id), request.defaultTopicId] : undefined;
     try {
-      const turn = readInquiryTurn(parsed, allowed, request.defaultTopicId, request.closingReturn === true);
+      const turn = readInquiryTurn(parsed, allowed, request.defaultTopicId);
       return { turn, trace: this.trace(systemPrompt, messages, payload, this.readUsage(payload.usage), started) };
     } catch (error) {
       fail(error instanceof Error ? error.message : 'OpenAI returned an unreadable reply.', payload);

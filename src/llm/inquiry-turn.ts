@@ -25,12 +25,13 @@ export interface ConversationMessage {
 export function inquirySystemPrompt(note?: string, topics?: PromptTopic[], defaultTopicId?: string, closingReturn = false): string {
   const lines = closingReturn
     ? [
-        'You are on a live phone call. The caller was just asked if they have other questions, and they do. Their latest message is that answer. Respond on this turn.',
+        'You are on a live phone call. The caller was just asked if they have other questions, and they do. Their latest message is that answer.',
         '',
+        'Your only job is to understand the new inquiry and hand it on. You do not answer it. Do not search, look up, or supply facts such as an address, location, hours, price, policy, or status.',
         'If they only agreed that they have a question and did not say what it is, ask what question they have. phase "clarify". reply is that short question. inquiry is null.',
-        'If they already stated the new question, answer that question in reply. inquiry is what they asked. phase "accepted".',
+        'If they already stated the new question, accept it on this turn. inquiry is what they want, not the answer. phase "accepted". reply must be an empty string, because the next step speaks the answer.',
         '',
-        'Do not greet. Do not repeat the closing question. Continue from their latest message.',
+        'Do not greet. Do not repeat the closing question. Do not use phase "confirm". Continue from their latest message.',
       ]
     : [
         'You are on a live phone call. Your only job is to agree with the caller on what their inquiry is. You do not answer the inquiry.',
@@ -49,9 +50,7 @@ export function inquirySystemPrompt(note?: string, topics?: PromptTopic[], defau
   if (topics && topics.length > 0 && defaultTopicId) {
     lines.push(
       '',
-      closingReturn
-        ? 'These are the topics a later step can route to. When you accept a stated question, set topicId to the matching topic, or the default id when nothing matches.'
-        : 'These are the topics a later step can route to. Use the conversation and these topics to recognize the direction. If the caller clearly matches one, accept now and set topicId to it. If the inquiry is clear but nothing matches, accept with the default id. Still do not answer the inquiry.',
+      'These are the topics a later step can route to. Use the conversation and these topics to recognize the direction. If the caller clearly matches one, accept now and set topicId to it. If the inquiry is clear but nothing matches, accept with the default id. Still do not answer the inquiry.',
       '',
       'Topics:',
       ...topics.map((topic) => `- ${topic.id}: ${topic.description}`),
@@ -67,7 +66,7 @@ export function inquirySystemPrompt(note?: string, topics?: PromptTopic[], defau
   return lines.join('\n');
 }
 
-export function readInquiryTurn(value: unknown, allowedTopicIds?: string[], fallbackTopicId?: string, keepAcceptedReply = false): InquiryTurn {
+export function readInquiryTurn(value: unknown, allowedTopicIds?: string[], fallbackTopicId?: string): InquiryTurn {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new BadRequestException('OpenAI returned an unreadable reply.');
   }
@@ -87,10 +86,7 @@ export function readInquiryTurn(value: unknown, allowedTopicIds?: string[], fall
   if (phase === 'clarify' && !reply) {
     throw new BadRequestException('OpenAI did not return a reply.');
   }
-  if (phase === 'accepted' && keepAcceptedReply && !reply) {
-    throw new BadRequestException('OpenAI did not return a reply.');
-  }
-  if ((phase === 'confirm' || phase === 'accepted') && !keepAcceptedReply) {
+  if (phase === 'confirm' || phase === 'accepted') {
     reply = '';
   }
   let topicId: string | null = null;
