@@ -10,8 +10,11 @@ import { ModelPricingModule } from './model-pricing/model-pricing.module';
 import { OrganizationsModule } from './organizations/organizations.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ScenarioExecutionsModule } from './scenario-executions/scenario-executions.module';
+import { PhoneNumbersModule } from './phone-numbers/phone-numbers.module';
+import { PhoneStreamingModule } from './phone-streaming/phone-streaming.module';
 import { ScenariosModule } from './scenarios/scenarios.module';
 import { SpeechToTextModule } from './speech-to-text/speech-to-text.module';
+import { TelephonyModule } from './telephony/telephony.module';
 import { SpeechToTextComparisonModule } from './speech-to-text-comparison/speech-to-text-comparison.module';
 import { TextToSpeechModule } from './text-to-speech/text-to-speech.module';
 import { UsersModule } from './users/users.module';
@@ -32,6 +35,9 @@ import { UsersModule } from './users/users.module';
     OrganizationsModule,
     ScenariosModule,
     ScenarioExecutionsModule,
+    PhoneStreamingModule,
+    PhoneNumbersModule,
+    TelephonyModule,
     HealthModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

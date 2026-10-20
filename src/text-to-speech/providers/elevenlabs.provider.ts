@@ -107,19 +107,19 @@ export class ElevenLabsTtsProvider implements TextToSpeechProvider {
     return this.fetchVoices(decryptSecret(stored.apiKey, this.key()));
   }
 
-  async speak(config: Record<string, unknown>, text: string): Promise<Buffer> {
+  async speak(config: Record<string, unknown>, text: string, format = 'mp3_44100_128'): Promise<Buffer> {
     const stored = this.readStored(config);
     const apiKey = decryptSecret(stored.apiKey, this.key());
     let response: Response;
     try {
       response = await fetch(
-        `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(stored.voiceId)}?output_format=mp3_44100_128`,
+        `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(stored.voiceId)}?output_format=${encodeURIComponent(format)}`,
         {
           method: 'POST',
           headers: {
             'xi-api-key': apiKey,
             'Content-Type': 'application/json',
-            Accept: 'audio/mpeg',
+            Accept: format.startsWith('ulaw') ? 'audio/basic' : 'audio/mpeg',
           },
           body: JSON.stringify({ text, model_id: stored.modelId }),
         },

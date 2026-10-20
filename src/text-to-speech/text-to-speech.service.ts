@@ -127,6 +127,16 @@ export class TextToSpeechService {
     }));
   }
 
+  /** Raw 8 kHz μ-law for a live phone call. It is not the cached mp3 clip. */
+  async speakPhone(id: string, text: string): Promise<Buffer> {
+    const spoken = text.trim();
+    if (!spoken) throw new BadRequestException('Enter the text to speak.');
+    const model = await this.findOrThrow(id);
+    if (!model.enabled) throw new BadRequestException('This model is disabled.');
+    const provider = this.providers.get(model.provider);
+    return provider.speak(model.config as Record<string, unknown>, spoken, 'ulaw_8000');
+  }
+
   async speak(id: string, text: string, execution: ExecutionContext | null = null) {
     const spoken = text.trim();
     if (!spoken) throw new BadRequestException('Enter the text to speak.');

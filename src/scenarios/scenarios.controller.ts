@@ -3,6 +3,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AuthUser, CurrentUser } from '../common/decorators/current-user.decorator';
 import { CreateScenarioDto } from './dto/create-scenario.dto';
 import { SaveScenarioGraphDto } from './dto/save-scenario-graph.dto';
+import { AttachPhoneNumberDto } from './dto/attach-phone-number.dto';
 import { SetScenarioActiveDto } from './dto/set-scenario-active.dto';
 import { ScenariosService } from './scenarios.service';
 
@@ -24,6 +25,11 @@ export class ScenariosController {
   @Get(':id')
   get(@Param('id', ParseUUIDPipe) id: string) {
     return this.scenarios.get(id);
+  }
+
+  @Patch(':id/phone-number')
+  attachPhoneNumber(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AttachPhoneNumberDto) {
+    return this.scenarios.attachPhoneNumber(id, dto.phoneNumberId ?? null);
   }
 
   @Patch(':id/active')

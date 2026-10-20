@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateScenarioDto } from './dto/create-scenario.dto';
@@ -30,10 +30,30 @@ export class ScenariosService {
   async get(id: string) {
     const scenario = await this.prisma.scenario.findUnique({
       where: { id },
-      select: { ...scenarioSummary, graph: true },
+      select: { ...scenarioSummary, graph: true, phoneNumber: { select: { id: true, e164: true } } },
     });
     if (!scenario) throw new NotFoundException('Scenario not found.');
     return { ...scenario, graph: readScenarioGraph(scenario.graph) };
+  }
+
+  /** One number belongs to one scenario. Passing null detaches the current number. */
+  async attachPhoneNumber(id: string, phoneNumberId: string | null) {
+    const scenario = await this.prisma.scenario.findUnique({ where: { id }, select: { id: true } });
+    if (!scenario) throw new NotFoundException('Scenario not found.');
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.phoneNumber.updateMany({ where: { scenarioId: id }, data: { scenarioId: null } });
+        if (!phoneNumberId) return;
+        const number = await tx.phoneNumber.findUnique({ where: { id: phoneNumberId }, select: { scenarioId: true } });
+        if (!number) throw new NotFoundException('Phone number not found.');
+        if (number.scenarioId && number.scenarioId !== id) throw new ConflictException('That number is already attached to a scenario.');
+        await tx.phoneNumber.update({ where: { id: phoneNumberId }, data: { scenarioId: id } });
+      });
+    } catch (error) {
+      if (error instanceof NotFoundException || error instanceof ConflictException) throw error;
+      throw error;
+    }
+    return this.get(id);
   }
 
   async create(dto: CreateScenarioDto, createdById: string) {

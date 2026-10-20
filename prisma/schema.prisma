@@ -24,6 +24,10 @@ enum LlmProvider {
   OPENAI
 }
 
+enum PhoneStreamProvider {
+  TWILIO
+}
+
 enum SttCheckStatus {
   SUCCEEDED
   FAILED
@@ -57,8 +61,57 @@ model User {
   organizations  Organization[]
   scenarios      Scenario[]
   scenarioExecutions ScenarioExecution[]
+  phoneStreamingServices PhoneStreamingService[]
 
   @@map("users")
+}
+
+/// A Twilio account an admin connects. The auth token is encrypted inside config.
+model PhoneStreamingService {
+  id          String              @id @default(uuid()) @db.Uuid
+  name        String
+  provider    PhoneStreamProvider
+  config      Json
+  enabled     Boolean             @default(true)
+  createdAt   DateTime            @default(now()) @map("created_at")
+  updatedAt   DateTime            @updatedAt @map("updated_at")
+  createdById String              @map("created_by") @db.Uuid
+  createdBy   User                @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  numbers     PhoneNumber[]
+
+  @@index([provider])
+  @@index([createdById])
+  @@map("phone_streaming_services")
+}
+
+/// One inbound call Twilio posted to the voice webhook.
+model PhoneCall {
+  id          String    @id @default(uuid()) @db.Uuid
+  callSid     String    @unique @map("call_sid")
+  fromNumber  String?   @map("from_number")
+  toNumber    String    @map("to_number")
+  scenarioId  String?   @map("scenario_id") @db.Uuid
+  scenario    Scenario? @relation(fields: [scenarioId], references: [id], onDelete: SetNull)
+  receivedAt  DateTime  @default(now()) @map("received_at")
+
+  @@index([receivedAt])
+  @@index([scenarioId])
+  @@map("phone_calls")
+}
+
+/// A number on a streaming account. It can be chosen by one scenario.
+model PhoneNumber {
+  id                 String                 @id @default(uuid()) @db.Uuid
+  e164               String                 @unique
+  streamingServiceId String                 @map("streaming_service_id") @db.Uuid
+  streamingService   PhoneStreamingService  @relation(fields: [streamingServiceId], references: [id], onDelete: Restrict)
+  scenarioId         String?                @unique @map("scenario_id") @db.Uuid
+  scenario           Scenario?              @relation(fields: [scenarioId], references: [id], onDelete: SetNull)
+  createdAt          DateTime               @default(now()) @map("created_at")
+  updatedAt          DateTime               @updatedAt @map("updated_at")
+
+  @@index([streamingServiceId])
+  @@map("phone_numbers")
 }
 
 model Organization {
@@ -90,6 +143,8 @@ model Scenario {
   createdById    String       @map("created_by") @db.Uuid
   createdBy      User         @relation(fields: [createdById], references: [id], onDelete: Restrict)
   executions     ScenarioExecution[]
+  phoneNumber    PhoneNumber?
+  phoneCalls     PhoneCall[]
 
   @@index([organizationId])
   @@index([createdById])

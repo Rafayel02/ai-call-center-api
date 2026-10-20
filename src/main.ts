@@ -6,6 +6,8 @@ import { json, urlencoded } from 'express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { attachPhoneStream } from './telephony/phone-stream';
+import { TelephonyService } from './telephony/telephony.service';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bodyParser: false });
@@ -42,6 +44,8 @@ async function bootstrap() {
   );
   app.useGlobalFilters(new HttpExceptionFilter());
   app.getHttpAdapter().getInstance().set('trust proxy', 1);
+
+  attachPhoneStream(app.getHttpServer(), app.get(TelephonyService));
 
   const port = Number(process.env.PORT ?? 3001);
   await app.listen(port, '0.0.0.0');

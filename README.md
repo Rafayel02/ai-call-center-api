@@ -10,7 +10,8 @@ NestJS API for the AI Call Center admin platform. It authenticates administrator
 - `text-to-speech` stores every provider in one `text_to_speech_models` table. ElevenLabs is the only provider. A model keeps the encrypted API key, the ElevenLabs model id, and the voice. The browser asks this API to speak; it never receives the key. The first time a saved model speaks a line, that audio is stored. The same model and the same line reuse it, even from two scenario steps. A new voice or provider model starts a new clip.
 - `health` checks the process and runs `SELECT 1`.
 - `organizations` stores a name and an optional description. Members, speech models, and playground data are not tied to an organization. Names are unique ignoring case and extra spaces.
-- `scenarios` belong to an organization. Each one stores a name, an optional description, an icon, and a graph of Start, Text to speech, and End steps. Text to speech keeps the line to say and an optional text-to-speech model. The browser can play that path for testing. The API does not run a scenario or a phone call.
+- `scenarios` belong to an organization. Each one stores a name, an optional description, an icon, and a graph of Start, Text to speech, and End steps. Text to speech keeps the line to say and an optional text-to-speech model. The browser can play that path for testing.
+- `phone-streaming` stores a Twilio account. The auth token is encrypted. `phone-numbers` stores a number on that account. A scenario chooses one number, and no other scenario can use it. `POST /telephony/twilio/voice` is the voice webhook: Twilio's signature is checked, and a published scenario opens a media stream so the API can hear the caller and speak the scenario. The host is the one the request already arrived on.
 
 Passwords are hashed with bcrypt. API keys use AES-256-GCM. List and detail responses return only the last four characters of a key.
 

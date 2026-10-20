@@ -9,5 +9,6 @@ import { ProviderRegistry } from './providers/provider.registry';
   imports: [ScenarioExecutionsModule],
   controllers: [LlmController],
   providers: [LlmService, ProviderRegistry, OpenAiProvider],
+  exports: [LlmService],
 })
 export class LlmModule {}

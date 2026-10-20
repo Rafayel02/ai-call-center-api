@@ -10,7 +10,7 @@
     "lint": "tsc --noEmit --pretty false",
     "typecheck": "tsc --noEmit --pretty false",
     "test:db": "tsx scripts/test-db.ts",
-    "test": "tsx --test src/common/crypto/credential-cipher.spec.ts src/llm/inquiry-turn.spec.ts src/llm/topic-route.spec.ts src/llm/closing-choice.spec.ts src/scenarios/scenario-graph.spec.ts src/scenario-executions/speech-segments.spec.ts src/text-to-speech/speech-clip.spec.ts src/speech-to-text-comparison/transcript-score.spec.ts src/model-pricing/read-prices.spec.ts src/scenario-executions/execution-price.spec.ts"
+    "test": "tsx --test src/common/crypto/credential-cipher.spec.ts src/llm/inquiry-turn.spec.ts src/llm/topic-route.spec.ts src/llm/closing-choice.spec.ts src/scenarios/scenario-graph.spec.ts src/scenario-executions/speech-segments.spec.ts src/text-to-speech/speech-clip.spec.ts src/speech-to-text-comparison/transcript-score.spec.ts src/model-pricing/read-prices.spec.ts src/scenario-executions/execution-price.spec.ts src/telephony/twilio-signature.spec.ts src/telephony/ulaw.spec.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.6",
@@ -31,6 +31,7 @@
     "prisma": "^6.16.2",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
+    "ws": "^8.22.0",
     "zod": "^4.1.11"
   },
   "devDependencies": {
@@ -40,6 +41,7 @@
     "@types/express": "^5.0.3",
     "@types/node": "^22.18.6",
     "@types/passport-jwt": "^4.0.1",
+    "@types/ws": "^8.18.2",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"
   },

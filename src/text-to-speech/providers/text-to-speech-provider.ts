@@ -20,5 +20,5 @@ export interface TextToSpeechProvider {
   testDraft?(config: unknown): Promise<ConnectionTestResult>;
   listVoices(config: unknown): Promise<TtsVoice[]>;
   listStoredVoices(config: Record<string, unknown>): Promise<TtsVoice[]>;
-  speak(config: Record<string, unknown>, text: string): Promise<Buffer>;
+  speak(config: Record<string, unknown>, text: string, format?: string): Promise<Buffer>;
 }
