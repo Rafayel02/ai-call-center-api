@@ -1,10 +1,8 @@
-import { Body, Controller, Delete, Get, Headers, Param, ParseUUIDPipe, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
-import { IncomingHttpHeaders } from 'http';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AuthUser, CurrentUser } from '../common/decorators/current-user.decorator';
-import { readExecutionContext } from '../scenario-executions/execution-context';
 import { CreateSpeechModelDto, TestDraftDto, UpdateSpeechModelDto } from './dto/speech-model.dto';
 import { SpeechToTextService } from './speech-to-text.service';
 
@@ -59,8 +57,7 @@ export class SpeechToTextController {
   transcribe(
     @Param('id', ParseUUIDPipe) id: string,
     @UploadedFile() file: { buffer?: Buffer; size?: number; mimetype?: string; originalname?: string },
-    @Headers() headers: IncomingHttpHeaders,
   ) {
-    return this.models.transcribe(id, file, readExecutionContext(headers));
+    return this.models.transcribe(id, file);
   }
 }
