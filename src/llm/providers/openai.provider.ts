@@ -103,7 +103,7 @@ export class OpenAiProvider implements LlmProviderClient {
   async complete(config: Record<string, unknown>, request: LlmCompletionRequest) {
     const started = Date.now();
     const stored = this.readStored(config);
-    const systemPrompt = inquirySystemPrompt(request.note, request.topics, request.defaultTopicId);
+    const systemPrompt = inquirySystemPrompt(request.note, request.topics, request.defaultTopicId, request.closingReturn === true);
     const messages = request.messages.map((message) => ({
       role: message.role,
       content: message.interrupted
@@ -164,7 +164,7 @@ export class OpenAiProvider implements LlmProviderClient {
     }
     const allowed = request.defaultTopicId ? [...(request.topics ?? []).map((topic) => topic.id), request.defaultTopicId] : undefined;
     try {
-      const turn = readInquiryTurn(parsed, allowed, request.defaultTopicId);
+      const turn = readInquiryTurn(parsed, allowed, request.defaultTopicId, request.closingReturn === true);
       return { turn, trace: this.trace(systemPrompt, messages, payload, this.readUsage(payload.usage), started) };
     } catch (error) {
       fail(error instanceof Error ? error.message : 'OpenAI returned an unreadable reply.', payload);
