@@ -343,6 +343,8 @@ model DemoRequest {
   businessName String   @map("business_name")
   contact      String
   industry     String
+  role         String?
+  callVolume   String?  @map("call_volume")
   needs        String
   createdAt    DateTime @default(now()) @map("created_at")
 

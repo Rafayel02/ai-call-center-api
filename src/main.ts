@@ -23,6 +23,7 @@ async function bootstrap() {
     'https://aicallcenter.am',
     'https://www.aicallcenter.am',
     'https://admin.aicallcenter.am',
+    'https://medical.aicallcenter.am',
   ].filter((origin, index, all) => all.indexOf(origin) === index);
 
   app.setGlobalPrefix('');

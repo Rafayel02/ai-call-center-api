@@ -23,6 +23,8 @@ export class DemoRequestsService {
         businessName: true,
         contact: true,
         industry: true,
+        role: true,
+        callVolume: true,
         needs: true,
         createdAt: true,
       },

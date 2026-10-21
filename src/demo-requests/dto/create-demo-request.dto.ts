@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsIn, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 
 export const DEMO_INDUSTRIES = [
   'Healthcare and dental',
@@ -38,6 +38,28 @@ export class CreateDemoRequestDto {
   @IsString()
   @IsIn(DEMO_INDUSTRIES)
   industry!: string;
+
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim().replace(/\s+/g, ' ');
+    return trimmed.length === 0 ? undefined : trimmed;
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  role?: string;
+
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim().replace(/\s+/g, ' ');
+    return trimmed.length === 0 ? undefined : trimmed;
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  callVolume?: string;
 
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
