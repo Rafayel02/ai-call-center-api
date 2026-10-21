@@ -21,6 +21,8 @@ async function bootstrap() {
       .map((origin) => origin.trim())
       .filter(Boolean),
     'https://aicallcenter.am',
+    'https://www.aicallcenter.am',
+    'https://admin.aicallcenter.am',
   ].filter((origin, index, all) => all.indexOf(origin) === index);
 
   app.setGlobalPrefix('');

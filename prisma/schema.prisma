@@ -336,3 +336,16 @@ model SpeechToTextResult {
   @@index([modelId, lastAttemptAt])
   @@map("speech_to_text_results")
 }
+
+model DemoRequest {
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String
+  businessName String   @map("business_name")
+  contact      String
+  industry     String
+  needs        String
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("demo_requests")
+}
