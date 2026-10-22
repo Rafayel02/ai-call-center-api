@@ -21,4 +21,5 @@ export interface TextToSpeechProvider {
   listVoices(config: unknown): Promise<TtsVoice[]>;
   listStoredVoices(config: Record<string, unknown>): Promise<TtsVoice[]>;
   speak(config: Record<string, unknown>, text: string, format?: string): Promise<Buffer>;
+  speakStream?(config: Record<string, unknown>, text: string, format: string, onChunk: (chunk: Buffer) => void): Promise<Buffer>;
 }

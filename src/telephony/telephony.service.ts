@@ -282,13 +282,23 @@ export class TelephonyService {
   private deps(): CallDeps {
     return {
       speak: (modelId, text, execution) => this.speech.speakPhone(modelId, text, execution),
+      speakStream: (modelId, text, execution, onChunk) => this.speech.speakPhoneStream(modelId, text, execution, onChunk),
       transcribe: async (modelId, wav, execution) => {
         const result = await this.hearing.transcribe(modelId, { buffer: wav, size: wav.length, mimetype: 'audio/wav', originalname: 'caller.wav' }, execution);
         return typeof result === 'string' ? result : result.text;
       },
+      openLive: (modelId) => this.hearing.openLive(modelId),
+      rememberTranscript: (modelId, wav, text, startedAt, execution) => this.hearing.remember(modelId, wav, text, startedAt, execution),
       complete: async (modelId, input, execution) => {
         const turn = await this.llm.complete(modelId, input, execution);
         return { reply: turn.reply, inquiry: turn.inquiry, phase: turn.phase, topicId: turn.topicId };
+      },
+      streamTurn: (modelId, input, execution) => {
+        const streamed = this.llm.stream(modelId, input, execution);
+        return {
+          sentences: streamed.sentences,
+          turn: streamed.turn.then((turn) => ({ reply: turn.reply, inquiry: turn.inquiry, phase: turn.phase, topicId: turn.topicId })),
+        };
       },
       judgeClosing: async (modelId, question, answer, execution) => {
         const result = await this.llm.judgeClosing(modelId, { question, answer }, execution);

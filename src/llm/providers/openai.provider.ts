@@ -12,7 +12,7 @@ import {
 import { closingPrompt, readClosingChoice } from '../closing-choice';
 import { inquirySystemPrompt, readInquiryTurn } from '../inquiry-turn';
 import { readTopicChoice, topicRoutePrompt } from '../topic-route';
-import { ConnectionTestResult, LlmCallTrace, LlmClosingRequest, LlmCompletionError, LlmCompletionRequest, LlmProviderClient, LlmRouteRequest, LlmUsage } from './llm-provider';
+import { ConnectionTestResult, LlmCallTrace, LlmClosingRequest, LlmCompletionError, LlmCompletionRequest, LlmCompletionResult, LlmProviderClient, LlmRouteRequest, LlmUsage } from './llm-provider';
 
 export const OPENAI_MODEL_IDS = ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1'] as const;
 
@@ -170,6 +170,133 @@ export class OpenAiProvider implements LlmProviderClient {
       fail(error instanceof Error ? error.message : 'OpenAI returned an unreadable reply.', payload);
     }
     throw new LlmCompletionError('OpenAI returned an unreadable reply.', this.trace(systemPrompt, messages, payload, null, started));
+  }
+
+  /** Streams the reply text, then resolves the same turn the blocking call returns. */
+  stream(config: Record<string, unknown>, request: LlmCompletionRequest) {
+    const started = Date.now();
+    const stored = this.readStored(config);
+    const systemPrompt = inquirySystemPrompt(request.note, request.topics, request.defaultTopicId, request.closingReturn === true, request.language);
+    const messages = request.messages.map((message) => ({
+      role: message.role,
+      content: message.interrupted ? `${message.content}\n[interrupted: the caller spoke over this and may not have heard it fully]` : message.content,
+    }));
+    const fail = (message: string, raw: unknown = null) => new LlmCompletionError(message, this.trace(systemPrompt, messages, raw, null, started));
+    const queued: string[] = [];
+    let waiting: ((delta: string | null) => void) | null = null;
+    let closed = false;
+    const push = (delta: string | null) => {
+      if (waiting) {
+        const resolve = waiting;
+        waiting = null;
+        resolve(delta);
+        return;
+      }
+      if (delta == null) closed = true;
+      else queued.push(delta);
+    };
+    const deltas = {
+      async *[Symbol.asyncIterator]() {
+        while (true) {
+          const delta = await new Promise<string | null>((resolve) => {
+            const next = queued.shift();
+            if (next != null) {
+              resolve(next);
+              return;
+            }
+            if (closed) {
+              resolve(null);
+              return;
+            }
+            waiting = resolve;
+          });
+          if (delta == null) return;
+          yield delta;
+        }
+      },
+    };
+    const result = (async (): Promise<LlmCompletionResult> => {
+      const apiKey = decryptSecret(stored.apiKey, this.key());
+      let response: Response;
+      try {
+        response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: stored.modelId,
+            temperature: 0.3,
+            max_completion_tokens: 400,
+            stream: true,
+            stream_options: { include_usage: true },
+            messages: [{ role: 'system', content: systemPrompt }, ...messages],
+            response_format: {
+              type: 'json_schema',
+              json_schema: {
+                name: 'inquiry_turn',
+                strict: true,
+                schema: inquiryResponseSchema(request.topics, request.defaultTopicId),
+              },
+            },
+          }),
+        });
+      } catch {
+        throw fail('Could not reach OpenAI.');
+      }
+      if (!response.ok || !response.body) throw fail(await this.openAiMessage(response));
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let content = '';
+      let usage: { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown } | undefined;
+      const emit = (delta: string) => {
+        if (!delta) return;
+        content += delta;
+        push(delta);
+      };
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const data = trimmed.slice(5).trim();
+          if (!data || data === '[DONE]') continue;
+          let payload: { choices?: Array<{ delta?: { content?: unknown; refusal?: unknown } }>; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown } };
+          try {
+            payload = JSON.parse(data) as typeof payload;
+          } catch {
+            continue;
+          }
+          if (payload.usage) usage = payload.usage;
+          const refusal = payload.choices?.[0]?.delta?.refusal;
+          if (typeof refusal === 'string' && refusal.trim()) throw fail('OpenAI refused this turn.', payload);
+          const delta = payload.choices?.[0]?.delta?.content;
+          if (typeof delta === 'string') emit(delta);
+        }
+      }
+      push(null);
+      if (!content.trim()) throw fail('OpenAI did not return a reply.');
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(content);
+      } catch {
+        throw fail('OpenAI returned an unreadable reply.', content);
+      }
+      const allowed = request.defaultTopicId ? [...(request.topics ?? []).map((topic) => topic.id), request.defaultTopicId] : undefined;
+      try {
+        const turn = readInquiryTurn(parsed, allowed, request.defaultTopicId);
+        return { turn, trace: this.trace(systemPrompt, messages, parsed, this.readUsage(usage), started) };
+      } catch (error) {
+        throw fail(error instanceof Error ? error.message : 'OpenAI returned an unreadable reply.', parsed);
+      }
+    })().catch((error: unknown) => {
+      push(null);
+      throw error;
+    });
+    return { deltas, result };
   }
 
   async text(config: Record<string, unknown>, system: string, user: string) {

@@ -9,6 +9,7 @@ import {
   EncryptedSecret,
   secretHint,
 } from '../../common/crypto/credential-cipher';
+import { ElevenLabsLiveTranscript } from '../elevenlabs-live';
 import {
   AudioInput,
   ConnectionTestResult,
@@ -152,6 +153,11 @@ export class ElevenLabsProvider implements SpeechToTextProvider {
       text: typeof payload.text === 'string' ? payload.text : '',
       languageCode: typeof payload.language_code === 'string' ? payload.language_code : stored.languageCode,
     };
+  }
+
+  openLive(config: Record<string, unknown>) {
+    const stored = this.readStored(config);
+    return new ElevenLabsLiveTranscript(decryptSecret(stored.apiKey, this.key()), stored.languageCode);
   }
 
   private store(apiKey: string, modelId: string, languageCode: string | null): StoredElevenLabsConfig {

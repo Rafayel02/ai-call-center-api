@@ -132,6 +132,39 @@ export class SpeechToTextService {
     }
   }
 
+  async openLive(id: string) {
+    try {
+      const model = await this.findOrThrow(id);
+      if (!model.enabled) return null;
+      const provider = this.providers.get(model.provider);
+      if (!provider.openLive) return null;
+      return provider.openLive(model.config as Record<string, unknown>);
+    } catch {
+      return null;
+    }
+  }
+
+  async remember(id: string, audio: Buffer, text: string, startedAt: number, execution: ExecutionContext | null = null) {
+    const model = await this.findOrThrow(id);
+    const provider = this.providers.get(model.provider);
+    const identity = provider.toPublic(model.config as Record<string, unknown>);
+    await this.executions.recordTranscription(execution, {
+      model: {
+        modelId: model.id,
+        modelName: model.name,
+        provider: model.provider,
+        providerModel: identity.modelId,
+      },
+      transcript: text,
+      languageCode: identity.languageCode,
+      latencyMs: Math.max(0, Date.now() - startedAt),
+      audio,
+      mimeType: 'audio/wav',
+      error: text.trim() ? null : 'The transcript was empty.',
+    });
+    return text;
+  }
+
   async testDraft(dto: TestDraftDto) {
     const provider = this.providers.get(dto.provider);
     const config = provider.validateCreate(dto.config);

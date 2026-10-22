@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { PrismaService } from '../prisma/prisma.service';
 import { CompleteTurnDto, CreateLlmModelDto, RouteCallDto, TestLlmDraftDto, UpdateLlmModelDto } from './dto/llm-model.dto';
 import { ConversationMessage } from './inquiry-turn';
+import { ReplyAssembler } from './reply-stream';
 import { ExecutionContext } from '../scenario-executions/execution-context';
 import { ScenarioExecutionsService } from '../scenario-executions/scenario-executions.service';
 import { LlmCompletionError, LlmProviderClient } from './providers/llm-provider';
@@ -194,6 +195,118 @@ export class LlmService {
       if (error instanceof LlmCompletionError) throw new BadRequestException(error.message);
       throw error;
     }
+  }
+
+  /** Speaks the reply sentence by sentence while the rest of the turn is still generating. */
+  stream(id: string, dto: CompleteTurnDto, execution: ExecutionContext | null = null) {
+    const parsed = completeSchema.safeParse(dto);
+    if (!parsed.success) {
+      const topicIssue = parsed.error.issues.some((issue) => issue.path[0] === 'topics' || issue.path[0] === 'defaultTopicId');
+      throw new BadRequestException(topicIssue ? 'Describe each topic before choosing a direction.' : 'Include the conversation.');
+    }
+    const messages: ConversationMessage[] = parsed.data.messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+      interrupted: message.interrupted,
+    }));
+    const request = {
+      messages,
+      note: parsed.data.note,
+      topics: parsed.data.topics,
+      defaultTopicId: parsed.data.defaultTopicId,
+      closingReturn: parsed.data.closingReturn === true,
+      language: parsed.data.language,
+    };
+    const assembler = new ReplyAssembler();
+    const queue: string[] = [];
+    let waiting: ((sentence: string | null) => void) | null = null;
+    let closed = false;
+    const push = (sentence: string | null) => {
+      if (waiting) {
+        const resolve = waiting;
+        waiting = null;
+        resolve(sentence);
+        return;
+      }
+      if (sentence == null) closed = true;
+      else queue.push(sentence);
+    };
+    const sentences = {
+      async *[Symbol.asyncIterator]() {
+        while (true) {
+          const sentence = await new Promise<string | null>((resolve) => {
+            const next = queue.shift();
+            if (next != null) {
+              resolve(next);
+              return;
+            }
+            if (closed) {
+              resolve(null);
+              return;
+            }
+            waiting = resolve;
+          });
+          if (sentence == null) return;
+          yield sentence;
+        }
+      },
+    };
+    const turn = (async () => {
+      let snapshot: { modelId: string; modelName: string; provider: LlmProvider; providerModel: string } | null = null;
+      try {
+        const model = await this.findOrThrow(id);
+        if (!model.enabled) throw new BadRequestException('This model is disabled.');
+        const provider = this.providers.get(model.provider);
+        snapshot = {
+          modelId: model.id,
+          modelName: model.name,
+          provider: model.provider,
+          providerModel: provider.toPublic(model.config as Record<string, unknown>).modelId,
+        };
+        if (!provider.stream) throw new BadRequestException('This model cannot stream a reply.');
+        const streamed = provider.stream(model.config as Record<string, unknown>, request);
+        for await (const delta of streamed.deltas) {
+          for (const sentence of assembler.push(delta)) push(sentence);
+          if (assembler.replyClosed) break;
+        }
+        push(null);
+        const result = await streamed.result;
+        await this.executions.recordLlm(execution, {
+          model: snapshot,
+          systemPrompt: result.trace.systemPrompt,
+          messages: result.trace.messages,
+          note: request.note ?? null,
+          topics: request.topics ?? null,
+          defaultTopicId: request.defaultTopicId ?? null,
+          raw: result.trace.raw,
+          turn: result.turn,
+          latencyMs: result.trace.latencyMs,
+          usage: result.trace.usage,
+        });
+        return result.turn;
+      } catch (error) {
+        if (snapshot) {
+          const trace = error instanceof LlmCompletionError ? error.trace : null;
+          await this.executions.recordLlm(execution, {
+            model: snapshot,
+            systemPrompt: trace?.systemPrompt ?? '',
+            messages: trace?.messages ?? messages,
+            note: request.note ?? null,
+            topics: request.topics ?? null,
+            defaultTopicId: request.defaultTopicId ?? null,
+            raw: trace?.raw ?? null,
+            latencyMs: trace?.latencyMs ?? 0,
+            usage: null,
+            error: error instanceof Error ? error.message : 'The model did not answer.',
+          });
+        }
+        if (error instanceof LlmCompletionError) throw new BadRequestException(error.message);
+        throw error;
+      } finally {
+        push(null);
+      }
+    })();
+    return { sentences, turn };
   }
 
   async translateLines(lines: string[], targetName: string) {

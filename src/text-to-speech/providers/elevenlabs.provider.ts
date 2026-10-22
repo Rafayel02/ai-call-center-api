@@ -131,6 +131,45 @@ export class ElevenLabsTtsProvider implements TextToSpeechProvider {
     return Buffer.from(await response.arrayBuffer());
   }
 
+  async speakStream(config: Record<string, unknown>, text: string, format: string, onChunk: (chunk: Buffer) => void) {
+    const stored = this.readStored(config);
+    const apiKey = decryptSecret(stored.apiKey, this.key());
+    const url = new URL(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(stored.voiceId)}/stream`);
+    url.searchParams.set('output_format', format);
+    url.searchParams.set('optimize_streaming_latency', '3');
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'xi-api-key': apiKey,
+          'Content-Type': 'application/json',
+          Accept: format.startsWith('ulaw') ? 'audio/basic' : 'audio/mpeg',
+        },
+        body: JSON.stringify({ text, model_id: stored.modelId }),
+      });
+    } catch {
+      throw new BadRequestException('Could not reach ElevenLabs.');
+    }
+    if (!response.ok) throw new BadRequestException(await this.elevenLabsMessage(response));
+    if (!response.body) {
+      const audio = Buffer.from(await response.arrayBuffer());
+      if (audio.length) onChunk(audio);
+      return audio;
+    }
+    const reader = response.body.getReader();
+    const parts: Buffer[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value);
+      if (!chunk.length) continue;
+      parts.push(chunk);
+      onChunk(chunk);
+    }
+    return Buffer.concat(parts);
+  }
+
   private async testApiKey(apiKey: string): Promise<ConnectionTestResult> {
     let response: Response;
     try {

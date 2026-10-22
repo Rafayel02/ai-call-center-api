@@ -33,4 +33,11 @@ export interface SpeechToTextProvider {
   engineKey(config: Record<string, unknown>): string;
   test?(config: Record<string, unknown>): Promise<ConnectionTestResult>;
   transcribe(config: Record<string, unknown>, audio: AudioInput): Promise<TranscriptionResult>;
+  openLive?(config: Record<string, unknown>): LiveTranscript;
+}
+
+export interface LiveTranscript {
+  push(audio: Buffer): void;
+  finish(): Promise<string>;
+  cancel(): void;
 }

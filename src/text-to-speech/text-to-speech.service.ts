@@ -173,6 +173,60 @@ export class TextToSpeechService {
     }
   }
 
+  /** Sends phone audio as soon as each chunk exists. Cached lines still play from the saved clip. */
+  async speakPhoneStream(id: string, text: string, execution: ExecutionContext | null, onChunk: (chunk: Buffer) => void) {
+    const spoken = text.trim();
+    if (!spoken) throw new BadRequestException('Enter the text to speak.');
+    const model = await this.findOrThrow(id);
+    if (!model.enabled) throw new BadRequestException('This model is disabled.');
+    const provider = this.providers.get(model.provider);
+    const config = model.config as Record<string, unknown>;
+    const identity = provider.toPublic(config);
+    const providerModelId = typeof identity.modelId === 'string' ? identity.modelId : '';
+    const voiceId = typeof identity.voiceId === 'string' ? identity.voiceId : '';
+    const snapshot = {
+      modelId: model.id,
+      modelName: model.name,
+      provider: model.provider,
+      providerModel: providerModelId,
+      voiceId,
+      voiceName: typeof identity.voiceName === 'string' ? identity.voiceName : '',
+    };
+    const reusable = execution?.ttsKind === 'step' || execution?.ttsKind === 'delay';
+    const started = Date.now();
+    try {
+      const clip = reusable && providerModelId && voiceId ? await this.phoneClip(model.id, providerModelId, voiceId, spoken) : null;
+      let audio: Buffer;
+      if (clip?.phoneAudio?.length) {
+        audio = Buffer.from(clip.phoneAudio);
+        onChunk(audio);
+      } else if (provider.speakStream) {
+        audio = await provider.speakStream(config, spoken, 'ulaw_8000', onChunk);
+      } else {
+        audio = await provider.speak(config, spoken, 'ulaw_8000');
+        if (audio.length) onChunk(audio);
+      }
+      if (clip && !clip.phoneAudio?.length) void this.storePhoneAudio(clip.id, audio);
+      if (!clip && reusable && providerModelId && voiceId) void this.storeFirstPhoneLine(model.id, provider, config, providerModelId, voiceId, spoken, audio);
+      await this.executions.recordSpeech(execution, {
+        model: snapshot,
+        text: spoken,
+        latencyMs: Date.now() - started,
+        audio,
+        mimeType: 'audio/basic',
+        cached: Boolean(clip?.phoneAudio?.length),
+      });
+    } catch (error) {
+      await this.executions.recordSpeech(execution, {
+        model: snapshot,
+        text: spoken,
+        latencyMs: Date.now() - started,
+        error: error instanceof Error ? error.message : 'Speech failed.',
+      });
+      throw error;
+    }
+  }
+
   async speak(id: string, text: string, execution: ExecutionContext | null = null) {
     const spoken = text.trim();
     if (!spoken) throw new BadRequestException('Enter the text to speak.');

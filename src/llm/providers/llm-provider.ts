@@ -76,6 +76,10 @@ export interface LlmProviderClient {
   toPublic(config: Record<string, unknown>): PublicLlmConfig;
   test?(config: Record<string, unknown>): Promise<ConnectionTestResult>;
   complete(config: Record<string, unknown>, request: LlmCompletionRequest): Promise<LlmCompletionResult>;
+  stream?(config: Record<string, unknown>, request: LlmCompletionRequest): {
+    deltas: AsyncIterable<string>;
+    result: Promise<LlmCompletionResult>;
+  };
   route(config: Record<string, unknown>, request: LlmRouteRequest): Promise<{ topicId: string }>;
   judgeClosing(config: Record<string, unknown>, request: LlmClosingRequest): Promise<LlmClosingResult>;
   text(config: Record<string, unknown>, system: string, user: string): Promise<string>;

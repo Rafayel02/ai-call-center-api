@@ -18,14 +18,28 @@ interface Turn {
   topicId: string | null;
 }
 
+export interface LiveEar {
+  push(audio: Buffer): void;
+  finish(): Promise<string>;
+  cancel(): void;
+}
+
 export interface CallDeps {
   speak(modelId: string, text: string, execution: ExecutionContext | null): Promise<Buffer>;
+  speakStream(modelId: string, text: string, execution: ExecutionContext | null, onChunk: (chunk: Buffer) => void): Promise<void>;
   transcribe(modelId: string, wav: Buffer, execution: ExecutionContext | null): Promise<string>;
+  openLive(modelId: string): Promise<LiveEar | null>;
+  rememberTranscript(modelId: string, wav: Buffer, text: string, startedAt: number, execution: ExecutionContext | null): Promise<string>;
   complete(
     modelId: string,
     input: { messages: Array<{ role: 'user' | 'assistant'; content: string }>; note?: string; topics?: Array<{ id: string; description: string }>; defaultTopicId?: string; closingReturn?: boolean; language?: string },
     execution: ExecutionContext | null,
   ): Promise<Turn>;
+  streamTurn(
+    modelId: string,
+    input: { messages: Array<{ role: 'user' | 'assistant'; content: string }>; note?: string; topics?: Array<{ id: string; description: string }>; defaultTopicId?: string; closingReturn?: boolean; language?: string },
+    execution: ExecutionContext | null,
+  ): { sentences: AsyncIterable<string>; turn: Promise<Turn> };
   judgeClosing(modelId: string, question: string, answer: string, execution: ExecutionContext | null): Promise<'questions' | 'done'>;
   onDigit?(digit: string): void;
 }
@@ -61,6 +75,12 @@ export class PhoneScenarioSession {
   private digitWait: ((digit: string | null) => void) | null = null;
   private hangupCall: (() => Promise<void>) | null = null;
   private readonly tones = new DtmfDecoder((digit) => this.takeDigit(digit));
+  private liveEar: LiveEar | null = null;
+  private captureLive = false;
+  private liveQueue: Buffer[] = [];
+  private playGeneration = 0;
+  private ulawRest: Buffer = Buffer.alloc(0);
+  private stopPlayback: (() => void) | null = null;
 
   constructor(
     private readonly socket: WebSocket,
@@ -96,10 +116,20 @@ export class PhoneScenarioSession {
     }
     if (message.event === 'start' && message.start?.streamSid) this.streamSid = message.start.streamSid;
     if (message.event === 'media' && message.media?.payload) {
-      const decoded = decodeUlaw(Buffer.from(message.media.payload, 'base64'));
+      const ulaw = Buffer.from(message.media.payload, 'base64');
+      const decoded = decodeUlaw(ulaw);
       if (this.listeningForDigit) this.tones.push(decoded);
       this.log.caller(decoded);
-      if (!this.playing) this.samples.push(decoded);
+      if (!this.playing) {
+        this.samples.push(decoded);
+        if (this.liveEar) {
+          if (this.captureLive) this.liveEar.push(ulaw);
+          else {
+            this.liveQueue.push(ulaw);
+            if (this.liveQueue.length > 100) this.liveQueue.shift();
+          }
+        }
+      }
     }
     if (message.event === 'mark' && message.mark?.name) this.markWait?.(message.mark.name);
     if (message.event === 'dtmf' && message.dtmf?.digit && this.listeningForDigit) this.takeDigit(message.dtmf.digit);
@@ -236,19 +266,34 @@ export class PhoneScenarioSession {
         delay = this.speakDelay(ttsModelId, fillers, node.id);
       } else {
         const prepared = this.prepareDelay(ttsModelId, fillers, node.id);
-        const heard = await this.listen(silenceSeconds);
+        const liveStarted = Date.now();
+        const live = await this.deps.openLive(sttModelId).catch(() => null);
+        this.liveEar = live;
+        let heard: Int16Array | null = null;
+        try {
+          heard = await this.listen(silenceSeconds);
+        } finally {
+          this.captureLive = false;
+          this.liveEar = null;
+        }
         if (!heard || this.closed) {
+          live?.cancel();
           prepared.abandon();
           return false;
         }
         delay = prepared.play();
         try {
-          text = await this.deps.transcribe(sttModelId, pcmWav(heard), this.heardContext(node.id));
+          const liveText = live ? await live.finish().catch(() => '') : '';
+          text = liveText.trim()
+            ? await this.deps.rememberTranscript(sttModelId, pcmWav(heard), liveText.trim(), liveStarted, this.heardContext(node.id))
+            : await this.deps.transcribe(sttModelId, pcmWav(heard), this.heardContext(node.id));
         } catch (error) {
+          this.cutPlayback();
           await delay.catch(() => undefined);
           throw error;
         }
         if (!text.trim()) {
+          this.cutPlayback();
           await delay.catch(() => undefined);
           continue;
         }
@@ -256,22 +301,38 @@ export class PhoneScenarioSession {
       }
       turns += 1;
       const topics = this.topicsAhead(node.id);
-      const turnPromise = this.deps.complete(
-        llmModelId,
-        {
-          messages: this.messages,
-          language: LANGUAGE_NAME[this.language],
-          ...(fromClosing ? { closingReturn: true } : {}),
-          ...(topics ?? {}),
-        },
-        this.log.context(node.id, null),
-      );
-      await delay;
-      const turn = await turnPromise;
-      if (turn.reply.trim()) {
-        this.messages.push({ role: 'assistant', content: turn.reply });
-        await this.speak(ttsModelId, turn.reply, node.id, 'reply');
+      const turnInput = {
+        messages: this.messages,
+        language: LANGUAGE_NAME[this.language],
+        ...(fromClosing ? { closingReturn: true } : {}),
+        ...(topics ?? {}),
+      };
+      const streamed = this.deps.streamTurn(llmModelId, turnInput, this.log.context(node.id, null));
+      void streamed.turn.catch(() => undefined);
+      let spoke = false;
+      try {
+        for await (const sentence of streamed.sentences) {
+          if (this.closed) return false;
+          const line = sentence.trim();
+          if (!line) continue;
+          if (!spoke) {
+            this.cutPlayback();
+            await delay.catch(() => undefined);
+          }
+          spoke = true;
+          await this.speak(ttsModelId, line, node.id, 'reply');
+        }
+      } catch (error) {
+        this.cutPlayback();
+        throw error;
       }
+      if (!spoke) {
+        this.cutPlayback();
+        await delay.catch(() => undefined);
+      }
+      const turn = await streamed.turn;
+      if (!spoke && turn.reply.trim()) await this.speak(ttsModelId, turn.reply, node.id, 'reply');
+      if (turn.reply.trim()) this.messages.push({ role: 'assistant', content: turn.reply });
       if (turn.phase === 'accepted' && turn.inquiry) {
         this.inquiry = turn.inquiry;
         this.topicId = turn.topicId;
@@ -315,41 +376,101 @@ export class PhoneScenarioSession {
 
   private async speak(modelId: string | null, text: string, nodeId: string, kind: SpokenKind) {
     if (!modelId || !text.trim() || this.closed) return;
-    const pending = this.deps.speak(modelId, text, this.log.context(nodeId, kind));
-    await this.playUlaw(text, nodeId, kind, pending);
+    const token = this.playGeneration;
+    const ctx = this.log.context(nodeId, kind);
+    let startMs = 0;
+    let sent = 0;
+    const heard: Buffer[] = [];
+    try {
+      await this.deps.speakStream(modelId, text, ctx, (chunk) => {
+        if (token !== this.playGeneration || this.closed || !chunk.length) return;
+        if (!startMs) {
+          startMs = this.log.now();
+          this.playing = true;
+          this.samples = [];
+        }
+        heard.push(chunk);
+        sent += this.writeUlaw(chunk);
+      });
+      if (heard.length) this.log.agent(decodeUlaw(Buffer.concat(heard)));
+      await this.finishPlayback(token, sent, startMs, nodeId, text, kind);
+    } finally {
+      if (token === this.playGeneration) {
+        this.playing = false;
+        this.samples = [];
+      }
+    }
   }
 
   private async playUlaw(text: string, nodeId: string, kind: SpokenKind, pending: Promise<Buffer>) {
+    const token = this.playGeneration;
     const audio = await pending;
-    if (this.closed) return;
+    if (this.closed || token !== this.playGeneration || !audio.length) return;
     const startMs = this.log.now();
     this.log.agent(decodeUlaw(audio));
-    await this.log.played({ nodeId, text, kind, startMs, endMs: startMs + Math.round(audio.length / 8) });
-    if (this.closed) return;
     this.playing = true;
     this.samples = [];
     try {
-      for (let offset = 0; offset < audio.length && !this.closed; offset += FRAME) {
-        this.send({ event: 'media', media: { payload: audio.subarray(offset, offset + FRAME).toString('base64') } });
-      }
-      const name = `m${Date.now()}`;
-      this.send({ event: 'mark', mark: { name } });
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-          this.markWait = null;
-          resolve();
-        }, Math.ceil(audio.length / 8) + 2000);
-        this.markWait = (heard) => {
-          if (heard !== name) return;
-          clearTimeout(timer);
-          this.markWait = null;
-          resolve();
-        };
-      });
+      const sent = this.writeUlaw(audio);
+      await this.finishPlayback(token, sent, startMs, nodeId, text, kind);
     } finally {
-      this.playing = false;
-      this.samples = [];
+      if (token === this.playGeneration) {
+        this.playing = false;
+        this.samples = [];
+      }
     }
+  }
+
+  private cutPlayback() {
+    this.playGeneration += 1;
+    this.ulawRest = Buffer.alloc(0);
+    this.playing = false;
+    this.send({ event: 'clear' });
+    const stop = this.stopPlayback;
+    this.stopPlayback = null;
+    stop?.();
+  }
+
+  private writeUlaw(chunk: Buffer) {
+    const data = this.ulawRest.length ? Buffer.concat([this.ulawRest, chunk]) : chunk;
+    const whole = data.length - (data.length % FRAME);
+    for (let offset = 0; offset < whole && !this.closed; offset += FRAME) {
+      this.send({ event: 'media', media: { payload: data.subarray(offset, offset + FRAME).toString('base64') } });
+    }
+    this.ulawRest = Buffer.from(data.subarray(whole));
+    return whole;
+  }
+
+  private async finishPlayback(token: number, sent: number, startMs: number, nodeId: string, text: string, kind: SpokenKind) {
+    if (token !== this.playGeneration || this.closed) return;
+    if (this.ulawRest.length) {
+      const frame = Buffer.concat([this.ulawRest, Buffer.alloc(FRAME - this.ulawRest.length, 0xff)]);
+      this.ulawRest = Buffer.alloc(0);
+      this.send({ event: 'media', media: { payload: frame.toString('base64') } });
+    }
+    if (sent > 0 && startMs) await this.log.played({ nodeId, text, kind, startMs, endMs: startMs + Math.round(sent / 8) });
+    await this.waitMark(token, sent);
+  }
+
+  private waitMark(token: number, bytes: number) {
+    if (token !== this.playGeneration || this.closed || bytes <= 0) return Promise.resolve();
+    const name = `m${Date.now()}`;
+    this.send({ event: 'mark', mark: { name } });
+    return new Promise<void>((resolve) => {
+      const finish = () => {
+        clearTimeout(timer);
+        if (this.markWait === onMark) this.markWait = null;
+        if (this.stopPlayback === finish) this.stopPlayback = null;
+        resolve();
+      };
+      const timer = setTimeout(finish, Math.ceil(bytes / 8) + 2000);
+      const onMark = (heard: string) => {
+        if (heard !== name) return;
+        finish();
+      };
+      this.markWait = onMark;
+      this.stopPlayback = finish;
+    });
   }
 
   private listen(silenceSeconds: number) {
@@ -360,6 +481,8 @@ export class PhoneScenarioSession {
     let ticks = 0;
     const uttered: Int16Array[] = [];
     this.samples = [];
+    this.captureLive = false;
+    this.liveQueue = [];
     return new Promise<Int16Array | null>((resolve) => {
       const timer = setInterval(() => {
         ticks += 1;
@@ -377,6 +500,9 @@ export class PhoneScenarioSession {
             else voiced = 0;
             if (voiced >= START_FRAMES) {
               started = true;
+              this.captureLive = true;
+              const queued = this.liveQueue.splice(0);
+              for (const frame of queued) this.liveEar?.push(frame);
               this.utteranceStartMs = Math.max(0, this.log.now() - START_FRAMES * 20);
               uttered.push(frame);
             }
