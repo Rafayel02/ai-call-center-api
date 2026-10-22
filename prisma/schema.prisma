@@ -153,6 +153,8 @@ model Scenario {
   executions     ScenarioExecution[]
   phoneNumber    PhoneNumber?
   phoneCalls     PhoneCall[]
+  demoProfiles   DemoProfile[]
+  demoSessions   DemoSession[]
 
   @@index([organizationId])
   @@index([createdById])
@@ -350,4 +352,38 @@ model DemoRequest {
 
   @@index([createdAt])
   @@map("demo_requests")
+}
+
+model DemoProfile {
+  id              String        @id @default(uuid()) @db.Uuid
+  key             String        @unique
+  displayName     String        @map("display_name")
+  scenarioId      String?       @map("scenario_id") @db.Uuid
+  scenario        Scenario?     @relation(fields: [scenarioId], references: [id], onDelete: SetNull)
+  defaultLanguage String        @default("hy") @map("default_language")
+  enabled         Boolean       @default(true)
+  accent          String?
+  logoUrl         String?       @map("logo_url")
+  copy            Json
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+  sessions        DemoSession[]
+
+  @@map("demo_profiles")
+}
+
+model DemoSession {
+  id              String      @id @default(uuid()) @db.Uuid
+  profileId       String      @map("profile_id") @db.Uuid
+  profile         DemoProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  scenarioId      String      @map("scenario_id") @db.Uuid
+  scenario        Scenario    @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+  tokenHash       String      @unique @map("token_hash")
+  executionId     String?     @unique @map("execution_id") @db.Uuid
+  allowedModelIds String[]    @map("allowed_model_ids")
+  expiresAt       DateTime    @map("expires_at")
+  createdAt       DateTime    @default(now()) @map("created_at")
+
+  @@index([expiresAt])
+  @@map("demo_sessions")
 }

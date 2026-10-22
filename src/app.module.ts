@@ -4,6 +4,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AuthModule } from './auth/auth.module';
 import { DatasetModule } from './dataset/dataset.module';
+import { DemoProfilesModule } from './demo-profiles/demo-profiles.module';
 import { DemoRequestsModule } from './demo-requests/demo-requests.module';
 import { HealthModule } from './health/health.module';
 import { LlmModule } from './llm/llm.module';
@@ -41,6 +42,7 @@ import { UsersModule } from './users/users.module';
     TelephonyModule,
     HealthModule,
     DemoRequestsModule,
+    DemoProfilesModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

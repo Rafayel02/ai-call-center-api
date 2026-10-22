@@ -8,6 +8,7 @@ export const DEMO_INDUSTRIES = [
   'Retail and e-commerce',
   'Real estate',
   'Automotive and service',
+  'Telecommunications',
   'Another industry',
 ] as const;
 

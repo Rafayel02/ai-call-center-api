@@ -1,5 +1,6 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { AuthUser } from '../common/decorators/current-user.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { verifyPassword } from '../users/passwords';
 import { LoginDto } from './dto/login.dto';
@@ -19,16 +20,16 @@ export class AuthService {
       throw new UnauthorizedException('Invalid email or password.');
     }
 
-    const accessToken = await this.jwt.signAsync({
-      sub: user.id,
-      email: user.email,
-      role: user.role,
-    });
+    const accessToken = await this.signAccess({ id: user.id, email: user.email, role: user.role }, '12h');
 
     return {
       accessToken,
       user: { id: user.id, email: user.email, role: user.role },
     };
+  }
+
+  signAccess(user: AuthUser, expiresIn: '5m' | '12h') {
+    return this.jwt.signAsync({ sub: user.id, email: user.email, role: user.role }, { expiresIn });
   }
 
   async me(userId: string) {
