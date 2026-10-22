@@ -230,18 +230,31 @@ export class PhoneScenarioSession {
       const fromClosing = this.resume;
       this.resume = false;
       let text = '';
+      let delay = Promise.resolve();
       if (fromClosing) {
         text = this.messages.at(-1)?.content ?? '';
+        delay = this.speakDelay(ttsModelId, fillers, node.id);
       } else {
+        const prepared = this.prepareDelay(ttsModelId, fillers, node.id);
         const heard = await this.listen(silenceSeconds);
-        if (!heard || this.closed) return false;
-        text = await this.deps.transcribe(sttModelId, pcmWav(heard), this.heardContext(node.id));
-        if (!text.trim()) continue;
+        if (!heard || this.closed) {
+          prepared.abandon();
+          return false;
+        }
+        delay = prepared.play();
+        try {
+          text = await this.deps.transcribe(sttModelId, pcmWav(heard), this.heardContext(node.id));
+        } catch (error) {
+          await delay.catch(() => undefined);
+          throw error;
+        }
+        if (!text.trim()) {
+          await delay.catch(() => undefined);
+          continue;
+        }
         this.messages.push({ role: 'user', content: text.trim() });
       }
       turns += 1;
-      const filler = fillers.map((line) => line.trim()).filter(Boolean);
-      const delay = filler.length > 0 ? this.speak(ttsModelId, filler[Math.floor(Math.random() * filler.length)], node.id, 'delay') : Promise.resolve();
       const topics = this.topicsAhead(node.id);
       const turnPromise = this.deps.complete(
         llmModelId,
@@ -283,13 +296,36 @@ export class PhoneScenarioSession {
     return this.deps.judgeClosing(llmModelId, text, answer, this.log.context(node.id, null));
   }
 
+  /** Load a delay line while the caller is still talking, so it can play the moment they go quiet. */
+  private prepareDelay(ttsModelId: string, fillers: string[], nodeId: string) {
+    const lines = fillers.map((line) => line.trim()).filter(Boolean);
+    const text = lines[Math.floor(Math.random() * lines.length)] ?? '';
+    if (!text || this.closed) return { play: () => Promise.resolve(), abandon: () => undefined };
+    const pending = this.deps.speak(ttsModelId, text, this.log.context(nodeId, 'delay'));
+    void pending.catch(() => undefined);
+    return {
+      play: () => this.playUlaw(text, nodeId, 'delay', pending),
+      abandon: () => undefined,
+    };
+  }
+
+  private speakDelay(ttsModelId: string, fillers: string[], nodeId: string) {
+    return this.prepareDelay(ttsModelId, fillers, nodeId).play();
+  }
+
   private async speak(modelId: string | null, text: string, nodeId: string, kind: SpokenKind) {
     if (!modelId || !text.trim() || this.closed) return;
-    const ctx = this.log.context(nodeId, kind);
-    const audio = await this.deps.speak(modelId, text, ctx);
+    const pending = this.deps.speak(modelId, text, this.log.context(nodeId, kind));
+    await this.playUlaw(text, nodeId, kind, pending);
+  }
+
+  private async playUlaw(text: string, nodeId: string, kind: SpokenKind, pending: Promise<Buffer>) {
+    const audio = await pending;
+    if (this.closed) return;
     const startMs = this.log.now();
     this.log.agent(decodeUlaw(audio));
     await this.log.played({ nodeId, text, kind, startMs, endMs: startMs + Math.round(audio.length / 8) });
+    if (this.closed) return;
     this.playing = true;
     this.samples = [];
     try {
