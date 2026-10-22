@@ -1,7 +1,5 @@
 import { WebSocket } from 'ws';
 
-const MODEL = 'gpt-realtime';
-
 interface RealtimeHandlers {
   onAudio: (payload: string) => void;
   onClear: () => void;
@@ -21,12 +19,13 @@ export class OpenAiRealtime {
 
   constructor(
     apiKey: string,
+    private readonly model: string,
     private readonly format: 'pcmu' | 'pcm',
     private readonly instructions: string,
     private readonly greeting: string,
     private readonly handlers: RealtimeHandlers,
   ) {
-    this.socket = new WebSocket(`wss://api.openai.com/v1/realtime?model=${MODEL}`, {
+    this.socket = new WebSocket(`wss://api.openai.com/v1/realtime?model=${encodeURIComponent(this.model)}`, {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
     this.done = new Promise((resolve) => {

@@ -16,6 +16,7 @@ import { mintCallToken, readCallToken } from './call-token';
 import { CallDeps, PhoneScenarioSession } from './call-session';
 import { OpenAiRealtime } from './openai-realtime';
 import { briefFromParts, realtimeBrief } from './realtime-brief';
+import { readRealtimeModel } from './realtime-models';
 import { isTwilioSignature } from './twilio-signature';
 import { ScenarioLanguage, ScenarioLanguageModels, isScenarioLanguage, languageKeyLine, languageModelsFor } from '../scenarios/scenario-languages';
 import { decodeUlaw, pcmWav } from './ulaw';
@@ -36,6 +37,7 @@ interface PendingCall {
   abandon: ReturnType<typeof setTimeout> | null;
   scenarioId: string;
   startedById: string;
+  realtimeModel: string;
   expires: number;
 }
 
@@ -212,7 +214,7 @@ export class TelephonyService {
     const stop = () => realtime?.close();
     socket.on('close', stop);
     socket.on('message', (data) => {
-      let message: { type?: string; audio?: string; language?: string; lines?: unknown; topics?: unknown; closing?: unknown };
+      let message: { type?: string; audio?: string; language?: string; lines?: unknown; topics?: unknown; closing?: unknown; model?: unknown };
       try {
         message = JSON.parse(String(data)) as typeof message;
       } catch {
@@ -235,7 +237,7 @@ export class TelephonyService {
     });
   }
 
-  private async beginTalk(socket: WebSocket, message: { language?: string; lines?: unknown; topics?: unknown; closing?: unknown }) {
+  private async beginTalk(socket: WebSocket, message: { language?: string; lines?: unknown; topics?: unknown; closing?: unknown; model?: unknown }) {
     const apiKey = await this.llm.realtimeKey();
     if (!apiKey) {
       if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'error', message: 'Add an enabled OpenAI model before talking.' }));
@@ -244,7 +246,7 @@ export class TelephonyService {
     }
     const language = message.language && isScenarioLanguage(message.language) ? message.language : 'en';
     const brief = briefFromParts(language, textList(message.lines), textList(message.topics), typeof message.closing === 'string' ? message.closing : '');
-    return new OpenAiRealtime(apiKey, 'pcm', brief.instructions, brief.greeting, {
+    return new OpenAiRealtime(apiKey, readRealtimeModel(message.model), 'pcm', brief.instructions, brief.greeting, {
       onReady: () => {
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'ready' }));
       },
@@ -265,7 +267,7 @@ export class TelephonyService {
     const language = pending.chosenLanguage ?? pending.languages[0] ?? 'en';
     const brief = realtimeBrief(pending.graph, language);
     let ready = false;
-    const realtime = new OpenAiRealtime(apiKey, 'pcmu', brief.instructions, brief.greeting, {
+    const realtime = new OpenAiRealtime(apiKey, pending.realtimeModel, 'pcmu', brief.instructions, brief.greeting, {
       onReady: () => {
         ready = true;
       },
@@ -342,6 +344,7 @@ export class TelephonyService {
       abandon: null,
       scenarioId: scenario.id,
       startedById: scenario.startedById,
+      realtimeModel: scenario.realtimeModel,
       expires: Date.now() + 60_000,
     };
     if (log) {
@@ -426,7 +429,7 @@ export class TelephonyService {
   private async publishedScenario(to: string) {
     const number = await this.prisma.phoneNumber.findUnique({
       where: { e164: to },
-      select: { scenario: { select: { id: true, active: true, graph: true, languages: true, languageModels: true, askLanguage: true, createdById: true } } },
+      select: { scenario: { select: { id: true, active: true, graph: true, languages: true, languageModels: true, askLanguage: true, realtimeModel: true, createdById: true } } },
     });
     if (!number?.scenario?.active) return null;
     const languages = number.scenario.languages.filter(isScenarioLanguage);
@@ -436,6 +439,7 @@ export class TelephonyService {
       languages,
       languageModels: languageModelsFor(languages, number.scenario.languageModels, false),
       askLanguage: number.scenario.askLanguage,
+      realtimeModel: readRealtimeModel(number.scenario.realtimeModel),
       graph: readScenarioGraph(number.scenario.graph),
     };
   }

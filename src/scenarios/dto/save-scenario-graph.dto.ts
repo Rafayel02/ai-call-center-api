@@ -1,4 +1,7 @@
-import { IsArray, IsBoolean, IsObject, IsOptional } from 'class-validator';
+import { IsArray, IsBoolean, IsIn, IsObject, IsOptional, IsString } from 'class-validator';
+import { REALTIME_MODELS } from '../../telephony/realtime-models';
+
+const REALTIME_MODEL_IDS = REALTIME_MODELS.map((model) => model.id);
 
 export class SaveScenarioGraphDto {
   @IsArray()
@@ -14,4 +17,9 @@ export class SaveScenarioGraphDto {
   @IsOptional()
   @IsBoolean()
   askLanguage?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(REALTIME_MODEL_IDS)
+  realtimeModel?: string;
 }

@@ -6,6 +6,7 @@ import { CreateScenarioDto } from './dto/create-scenario.dto';
 import { SaveScenarioGraphDto } from './dto/save-scenario-graph.dto';
 import { emptyScenarioGraph, parseScenarioGraph, readScenarioGraph } from './scenario-graph';
 import { LANGUAGE_NAME, ScenarioLanguage, applyTranslations, clearGraphModels, detectScript, emptyVoice, isScenarioLanguage, languageModelsFor, modelsOnGraph, spokenSample, spokenSlots, stampLanguage } from './scenario-languages';
+import { readRealtimeModel } from '../telephony/realtime-models';
 
 const scenarioSummary = {
   id: true,
@@ -14,6 +15,7 @@ const scenarioSummary = {
   icon: true,
   languages: true,
   askLanguage: true,
+  realtimeModel: true,
   active: true,
   createdAt: true,
   updatedAt: true,
@@ -191,6 +193,7 @@ export class ScenariosService implements OnModuleInit {
           graph: graph as unknown as Prisma.InputJsonValue,
           ...(languageModels ? { languageModels: languageModels as unknown as Prisma.InputJsonValue } : {}),
           ...(dto.askLanguage === undefined ? {} : { askLanguage: dto.askLanguage }),
+          ...(dto.realtimeModel === undefined ? {} : { realtimeModel: dto.realtimeModel }),
         },
         select: { ...scenarioSummary, graph: true, languageModels: true, phoneNumber: { select: { id: true, e164: true } } },
       });
@@ -204,10 +207,11 @@ export class ScenariosService implements OnModuleInit {
   }
 }
 
-function presentScenario<T extends { languages: string[]; languageModels: Prisma.JsonValue; graph: Prisma.JsonValue }>(scenario: T) {
+function presentScenario<T extends { languages: string[]; languageModels: Prisma.JsonValue; graph: Prisma.JsonValue; realtimeModel: string }>(scenario: T) {
   const languages = scenario.languages.filter(isScenarioLanguage);
   return {
     ...scenario,
+    realtimeModel: readRealtimeModel(scenario.realtimeModel),
     graph: readScenarioGraph(scenario.graph),
     languageModels: languageModelsFor(languages, scenario.languageModels, false),
   };
