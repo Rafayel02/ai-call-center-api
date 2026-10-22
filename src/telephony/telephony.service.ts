@@ -11,9 +11,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { readScenarioGraph, ScenarioGraph } from '../scenarios/scenario-graph';
 import { SpeechToTextService } from '../speech-to-text/speech-to-text.service';
 import { TextToSpeechService } from '../text-to-speech/text-to-speech.service';
-import { PhoneCallLog, silentLog } from './call-log';
+import { CallLog, PhoneCallLog, silentLog } from './call-log';
 import { mintCallToken, readCallToken } from './call-token';
 import { CallDeps, PhoneScenarioSession } from './call-session';
+import { OpenAiRealtime } from './openai-realtime';
+import { briefFromParts, realtimeBrief } from './realtime-brief';
 import { isTwilioSignature } from './twilio-signature';
 import { ScenarioLanguage, ScenarioLanguageModels, isScenarioLanguage, languageKeyLine, languageModelsFor } from '../scenarios/scenario-languages';
 import { decodeUlaw, pcmWav } from './ulaw';
@@ -119,14 +121,21 @@ export class TelephonyService {
     if (!claimed) return;
     const { session, pending } = claimed;
     session.prepareHangup(() => this.endCall(pending.callSid));
-    socket.on('message', (data) => session.receive(String(data)));
     socket.on('close', () => session.hangUp());
     const log = await this.openLog(pending);
     session.useLog(log);
+    const apiKey = await this.llm.realtimeKey();
     try {
-      await session.run();
-      const outcome = session.outcome();
-      await log.finish(outcome.reachedEnd ? ExecutionStatus.FINISHED : ExecutionStatus.STOPPED);
+      if (apiKey) {
+        const ready = await this.speakLive(socket, session, pending, log, apiKey);
+        await log.finish(ready ? ExecutionStatus.FINISHED : ExecutionStatus.FAILED, ready ? undefined : 'The live voice did not start.');
+      } else {
+        this.logger.warn('No enabled OpenAI model, so the call used the slower scenario path.');
+        socket.on('message', (data) => session.receive(String(data)));
+        await session.run();
+        const outcome = session.outcome();
+        await log.finish(outcome.reachedEnd ? ExecutionStatus.FINISHED : ExecutionStatus.STOPPED);
+      }
     } catch (error) {
       this.logger.warn(`Phone scenario failed: ${error instanceof Error ? error.message : 'unknown error'}`);
       await log.finish(ExecutionStatus.FAILED, error instanceof Error ? error.message : 'The call failed.');
@@ -184,6 +193,112 @@ export class TelephonyService {
       };
       socket.on('message', onMessage);
     });
+  }
+
+  talkToken(userId: string) {
+    return mintCallToken(this.secret(), `talk:${userId}`, Date.now(), 5 * 60_000);
+  }
+
+  openTalk(socket: WebSocket, request: IncomingMessage) {
+    const token = new URL(request.url ?? '', 'http://localhost').searchParams.get('token') ?? '';
+    const owner = readCallToken(this.secret(), token);
+    if (!owner?.startsWith('talk:')) {
+      socket.close(1008, 'The talk token is not valid.');
+      return;
+    }
+    let realtime: OpenAiRealtime | null = null;
+    let starting = false;
+    const queued: string[] = [];
+    const stop = () => realtime?.close();
+    socket.on('close', stop);
+    socket.on('message', (data) => {
+      let message: { type?: string; audio?: string; language?: string; lines?: unknown; topics?: unknown; closing?: unknown };
+      try {
+        message = JSON.parse(String(data)) as typeof message;
+      } catch {
+        return;
+      }
+      if (message.type === 'start' && !starting) {
+        starting = true;
+        void this.beginTalk(socket, message).then((session) => {
+          realtime = session;
+          if (!session) return;
+          for (const audio of queued.splice(0)) session.sendAudio(audio);
+        });
+        return;
+      }
+      if (message.type === 'audio' && typeof message.audio === 'string') {
+        if (realtime) realtime.sendAudio(message.audio);
+        else if (queued.length < 200) queued.push(message.audio);
+      }
+      if (message.type === 'stop') stop();
+    });
+  }
+
+  private async beginTalk(socket: WebSocket, message: { language?: string; lines?: unknown; topics?: unknown; closing?: unknown }) {
+    const apiKey = await this.llm.realtimeKey();
+    if (!apiKey) {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'error', message: 'Add an enabled OpenAI model before talking.' }));
+      socket.close();
+      return null;
+    }
+    const language = message.language && isScenarioLanguage(message.language) ? message.language : 'en';
+    const brief = briefFromParts(language, textList(message.lines), textList(message.topics), typeof message.closing === 'string' ? message.closing : '');
+    return new OpenAiRealtime(apiKey, 'pcm', brief.instructions, brief.greeting, {
+      onReady: () => {
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'ready' }));
+      },
+      onAudio: (payload) => {
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'audio', audio: payload }));
+      },
+      onClear: () => {
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'clear' }));
+      },
+      onError: (error) => {
+        this.logger.warn(`Live voice: ${error}`);
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'error', message: error }));
+      },
+    });
+  }
+
+  private speakLive(socket: WebSocket, session: PhoneScenarioSession, pending: PendingCall, log: CallLog, apiKey: string) {
+    const language = pending.chosenLanguage ?? pending.languages[0] ?? 'en';
+    const brief = realtimeBrief(pending.graph, language);
+    let ready = false;
+    const realtime = new OpenAiRealtime(apiKey, 'pcmu', brief.instructions, brief.greeting, {
+      onReady: () => {
+        ready = true;
+      },
+      onAudio: (payload) => {
+        const streamSid = session.streamId();
+        if (!streamSid || socket.readyState !== WebSocket.OPEN) return;
+        socket.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
+        log.agent(decodeUlaw(Buffer.from(payload, 'base64')));
+      },
+      onClear: () => {
+        const streamSid = session.streamId();
+        if (streamSid && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ event: 'clear', streamSid }));
+      },
+      onError: (message) => {
+        this.logger.warn(`Live voice: ${message}`);
+        if (!ready && socket.readyState === WebSocket.OPEN) socket.close();
+      },
+    });
+    socket.on('message', (data) => {
+      let message: { event?: string; media?: { payload?: string } };
+      try {
+        message = JSON.parse(String(data)) as typeof message;
+      } catch {
+        return;
+      }
+      if (message.event === 'media' && message.media?.payload) {
+        realtime.sendAudio(message.media.payload);
+        log.caller(decodeUlaw(Buffer.from(message.media.payload, 'base64')));
+      }
+      if (message.event === 'stop') realtime.close();
+    });
+    socket.on('close', () => realtime.close());
+    return realtime.done;
   }
 
   private async openLog(pending: PendingCall) {
@@ -341,6 +456,11 @@ export class TelephonyService {
       throw error;
     }
   }
+}
+
+function textList(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string').slice(0, 40);
 }
 
 function header(request: IncomingMessage, name: string) {

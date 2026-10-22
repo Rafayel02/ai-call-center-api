@@ -422,6 +422,18 @@ export class LlmService {
     return provider.test(config);
   }
 
+  async realtimeKey() {
+    const model = await this.prisma.llmModel.findFirst({ where: { enabled: true, provider: 'OPENAI' }, orderBy: { createdAt: 'asc' } });
+    if (!model) return null;
+    const provider = this.providers.get(model.provider);
+    if (!provider.readApiKey) return null;
+    try {
+      return provider.readApiKey(model.config as Record<string, unknown>);
+    } catch {
+      return null;
+    }
+  }
+
   private async findOrThrow(id: string) {
     const model = await this.prisma.llmModel.findUnique({
       where: { id },

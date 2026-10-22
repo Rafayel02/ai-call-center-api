@@ -74,6 +74,7 @@ export interface LlmProviderClient {
   validateCreate(config: unknown): Record<string, unknown>;
   validateUpdate(config: unknown, existing: Record<string, unknown>): Record<string, unknown>;
   toPublic(config: Record<string, unknown>): PublicLlmConfig;
+  readApiKey?(config: Record<string, unknown>): string;
   test?(config: Record<string, unknown>): Promise<ConnectionTestResult>;
   complete(config: Record<string, unknown>, request: LlmCompletionRequest): Promise<LlmCompletionResult>;
   stream?(config: Record<string, unknown>, request: LlmCompletionRequest): {

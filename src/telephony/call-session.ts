@@ -100,6 +100,10 @@ export class PhoneScenarioSession {
     this.log = log;
   }
 
+  streamId() {
+    return this.streamSid;
+  }
+
   outcome() {
     this.log.inquiry = this.inquiry;
     this.log.topicId = this.topicId;

@@ -7,6 +7,12 @@ export function attachPhoneStream(server: HttpServer, telephony: TelephonyServic
   const sockets = new WebSocketServer({ noServer: true });
   server.on('upgrade', (request, socket, head) => {
     const path = (request.url ?? '').split('?')[0];
+    if (path === '/telephony/talk') {
+      sockets.handleUpgrade(request, socket, head, (ws) => {
+        telephony.openTalk(ws, request);
+      });
+      return;
+    }
     if (path !== '/telephony/twilio/stream') {
       socket.destroy();
       return;

@@ -5,11 +5,12 @@ import { PhoneStreamingModule } from '../phone-streaming/phone-streaming.module'
 import { SpeechToTextModule } from '../speech-to-text/speech-to-text.module';
 import { TextToSpeechModule } from '../text-to-speech/text-to-speech.module';
 import { TelephonyController } from './telephony.controller';
+import { TalkController } from './talk.controller';
 import { TelephonyService } from './telephony.service';
 
 @Module({
   imports: [PhoneStreamingModule, TextToSpeechModule, SpeechToTextModule, LlmModule, ScenarioExecutionsModule],
-  controllers: [TelephonyController],
+  controllers: [TelephonyController, TalkController],
   providers: [TelephonyService],
   exports: [TelephonyService],
 })

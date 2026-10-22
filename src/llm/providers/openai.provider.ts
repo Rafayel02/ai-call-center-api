@@ -75,6 +75,10 @@ export class OpenAiProvider implements LlmProviderClient {
     return this.store(parsed.data.apiKey, parsed.data.modelId ?? current.modelId) as unknown as Record<string, unknown>;
   }
 
+  readApiKey(config: Record<string, unknown>) {
+    return decryptSecret(this.readStored(config).apiKey, this.key());
+  }
+
   toPublic(config: Record<string, unknown>) {
     const stored = this.readStored(config);
     return { modelId: stored.modelId, apiKeyHint: stored.apiKeyHint };
