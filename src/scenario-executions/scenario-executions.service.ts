@@ -8,6 +8,7 @@ import { reusedSpeechPayload, speechClipKey } from '../text-to-speech/speech-cli
 import { CreateScenarioExecutionDto, ExecutionEventDto, FinishScenarioExecutionDto } from './dto/scenario-execution.dto';
 import { ExecutionContext } from './execution-context';
 import { highlightPrices, priceExecution, readPriceParts, speechGenerationUsd } from './execution-price';
+import { callerClips } from './caller-clips';
 import { speechSegments } from './speech-segments';
 
 export const MAX_EXECUTION_AUDIO_BYTES = 30 * 1024 * 1024;
@@ -369,6 +370,36 @@ export class ScenarioExecutionsService implements OnModuleInit {
     return {
       items: page.map((row) => this.present(row)),
       nextCursor: rows.length > limit && last ? encodeCursor(last.startedAt, last.id) : null,
+    };
+  }
+
+  async callerClips(scenarioId: string) {
+    const scenario = await this.prisma.scenario.findUnique({ where: { id: scenarioId }, select: { id: true } });
+    if (!scenario) throw new NotFoundException('Scenario not found.');
+    const executions = await this.prisma.scenarioExecution.findMany({
+      where: { scenarioId },
+      orderBy: { startedAt: 'desc' },
+      take: 80,
+      select: { id: true, startedAt: true },
+    });
+    if (executions.length === 0) return { items: [] };
+    const started = new Map(executions.map((row) => [row.id, row.startedAt]));
+    const events = await this.prisma.scenarioExecutionEvent.findMany({
+      where: { executionId: { in: [...started.keys()] }, type: 'stt.completed', audioId: { not: null } },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+      select: { id: true, executionId: true, audioId: true, payload: true, createdAt: true },
+    });
+    return {
+      items: callerClips(
+        events.map((event) => ({
+          id: event.id,
+          executionId: event.executionId,
+          audioId: event.audioId,
+          payload: event.payload,
+          startedAt: started.get(event.executionId) ?? event.createdAt,
+        })),
+      ).slice(0, 100),
     };
   }
 

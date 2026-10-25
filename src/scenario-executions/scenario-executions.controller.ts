@@ -23,6 +23,11 @@ export class ScenarioExecutionsController {
     return this.executions.create(dto, user.id);
   }
 
+  @Get('scenarios/:scenarioId/caller-clips')
+  callerClips(@Param('scenarioId', ParseUUIDPipe) scenarioId: string) {
+    return this.executions.callerClips(scenarioId);
+  }
+
   @Get('scenarios/:scenarioId/executions')
   list(
     @Param('scenarioId', ParseUUIDPipe) scenarioId: string,

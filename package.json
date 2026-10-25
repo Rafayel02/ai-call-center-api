@@ -10,7 +10,7 @@
     "lint": "tsc --noEmit --pretty false",
     "typecheck": "tsc --noEmit --pretty false",
     "test:db": "tsx scripts/test-db.ts",
-    "test": "tsx --test src/common/crypto/credential-cipher.spec.ts src/llm/inquiry-turn.spec.ts src/llm/reply-stream.spec.ts src/llm/topic-route.spec.ts src/llm/closing-choice.spec.ts src/scenarios/scenario-graph.spec.ts src/scenario-executions/speech-segments.spec.ts src/text-to-speech/speech-clip.spec.ts src/speech-to-text/elevenlabs-live.spec.ts src/speech-to-text-comparison/transcript-score.spec.ts src/model-pricing/read-prices.spec.ts src/scenario-executions/execution-price.spec.ts src/telephony/twilio-signature.spec.ts src/telephony/ulaw.spec.ts src/telephony/call-recording.spec.ts src/telephony/realtime-brief.spec.ts src/telephony/realtime-models.spec.ts src/demo-profiles/demo-access.spec.ts"
+    "test": "tsx --test src/common/crypto/credential-cipher.spec.ts src/llm/inquiry-turn.spec.ts src/llm/reply-stream.spec.ts src/llm/topic-route.spec.ts src/llm/closing-choice.spec.ts src/scenarios/scenario-graph.spec.ts src/scenario-executions/speech-segments.spec.ts src/text-to-speech/speech-clip.spec.ts src/speech-to-text/elevenlabs-live.spec.ts src/speech-to-text-comparison/transcript-score.spec.ts src/model-pricing/read-prices.spec.ts src/scenario-executions/execution-price.spec.ts src/telephony/twilio-signature.spec.ts src/telephony/ulaw.spec.ts src/telephony/call-recording.spec.ts src/telephony/realtime-brief.spec.ts src/telephony/realtime-models.spec.ts src/scenario-executions/caller-clips.spec.ts src/demo-profiles/demo-access.spec.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.6",
