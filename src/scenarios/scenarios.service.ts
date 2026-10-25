@@ -6,6 +6,7 @@ import { CreateScenarioDto } from './dto/create-scenario.dto';
 import { SaveScenarioGraphDto } from './dto/save-scenario-graph.dto';
 import { emptyScenarioGraph, parseScenarioGraph, readScenarioGraph } from './scenario-graph';
 import { LANGUAGE_NAME, ScenarioLanguage, applyTranslations, clearGraphModels, detectScript, emptyVoice, isScenarioLanguage, languageModelsFor, modelsOnGraph, spokenSample, spokenSlots, stampLanguage } from './scenario-languages';
+import { readVoiceMode, readVoicePrompt } from '../telephony/realtime-brief';
 import { readRealtimeModel } from '../telephony/realtime-models';
 
 const scenarioSummary = {
@@ -16,6 +17,7 @@ const scenarioSummary = {
   languages: true,
   askLanguage: true,
   realtimeModel: true,
+  voiceMode: true,
   active: true,
   createdAt: true,
   updatedAt: true,
@@ -82,7 +84,7 @@ export class ScenariosService implements OnModuleInit {
   async get(id: string) {
     const scenario = await this.prisma.scenario.findUnique({
       where: { id },
-      select: { ...scenarioSummary, graph: true, languageModels: true, phoneNumber: { select: { id: true, e164: true } } },
+      select: { ...scenarioSummary, graph: true, languageModels: true, voicePrompt: true, phoneNumber: { select: { id: true, e164: true } } },
     });
     if (!scenario) throw new NotFoundException('Scenario not found.');
     return presentScenario(scenario);
@@ -194,8 +196,10 @@ export class ScenariosService implements OnModuleInit {
           ...(languageModels ? { languageModels: languageModels as unknown as Prisma.InputJsonValue } : {}),
           ...(dto.askLanguage === undefined ? {} : { askLanguage: dto.askLanguage }),
           ...(dto.realtimeModel === undefined ? {} : { realtimeModel: dto.realtimeModel }),
+          ...(dto.voiceMode === undefined ? {} : { voiceMode: dto.voiceMode }),
+          ...(dto.voicePrompt === undefined ? {} : { voicePrompt: dto.voicePrompt.trim() }),
         },
-        select: { ...scenarioSummary, graph: true, languageModels: true, phoneNumber: { select: { id: true, e164: true } } },
+        select: { ...scenarioSummary, graph: true, languageModels: true, voicePrompt: true, phoneNumber: { select: { id: true, e164: true } } },
       });
       return presentScenario(scenario);
     } catch (error) {
@@ -207,11 +211,13 @@ export class ScenariosService implements OnModuleInit {
   }
 }
 
-function presentScenario<T extends { languages: string[]; languageModels: Prisma.JsonValue; graph: Prisma.JsonValue; realtimeModel: string }>(scenario: T) {
+function presentScenario<T extends { languages: string[]; languageModels: Prisma.JsonValue; graph: Prisma.JsonValue; realtimeModel: string; voiceMode: string; voicePrompt: string }>(scenario: T) {
   const languages = scenario.languages.filter(isScenarioLanguage);
   return {
     ...scenario,
     realtimeModel: readRealtimeModel(scenario.realtimeModel),
+    voiceMode: readVoiceMode(scenario.voiceMode),
+    voicePrompt: readVoicePrompt(scenario.voicePrompt),
     graph: readScenarioGraph(scenario.graph),
     languageModels: languageModelsFor(languages, scenario.languageModels, false),
   };

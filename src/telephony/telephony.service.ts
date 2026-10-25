@@ -15,7 +15,7 @@ import { CallLog, PhoneCallLog, silentLog } from './call-log';
 import { mintCallToken, readCallToken } from './call-token';
 import { CallDeps, PhoneScenarioSession } from './call-session';
 import { OpenAiRealtime } from './openai-realtime';
-import { briefFromParts, realtimeBrief } from './realtime-brief';
+import { briefFromParts, promptBrief, readVoiceMode, readVoicePrompt, realtimeBrief, VoiceMode } from './realtime-brief';
 import { readRealtimeModel } from './realtime-models';
 import { isTwilioSignature } from './twilio-signature';
 import { ScenarioLanguage, ScenarioLanguageModels, isScenarioLanguage, languageKeyLine, languageModelsFor } from '../scenarios/scenario-languages';
@@ -38,6 +38,8 @@ interface PendingCall {
   scenarioId: string;
   startedById: string;
   realtimeModel: string;
+  voiceMode: VoiceMode;
+  voicePrompt: string;
   expires: number;
 }
 
@@ -214,7 +216,7 @@ export class TelephonyService {
     const stop = () => realtime?.close();
     socket.on('close', stop);
     socket.on('message', (data) => {
-      let message: { type?: string; audio?: string; language?: string; lines?: unknown; topics?: unknown; closing?: unknown; model?: unknown };
+      let message: { type?: string; audio?: string; language?: string; lines?: unknown; topics?: unknown; closing?: unknown; model?: unknown; mode?: unknown; prompt?: unknown };
       try {
         message = JSON.parse(String(data)) as typeof message;
       } catch {
@@ -237,7 +239,7 @@ export class TelephonyService {
     });
   }
 
-  private async beginTalk(socket: WebSocket, message: { language?: string; lines?: unknown; topics?: unknown; closing?: unknown; model?: unknown }) {
+  private async beginTalk(socket: WebSocket, message: { language?: string; lines?: unknown; topics?: unknown; closing?: unknown; model?: unknown; mode?: unknown; prompt?: unknown }) {
     const apiKey = await this.llm.realtimeKey();
     if (!apiKey) {
       if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'error', message: 'Add an enabled OpenAI model before talking.' }));
@@ -245,7 +247,10 @@ export class TelephonyService {
       return null;
     }
     const language = message.language && isScenarioLanguage(message.language) ? message.language : 'en';
-    const brief = briefFromParts(language, textList(message.lines), textList(message.topics), typeof message.closing === 'string' ? message.closing : '');
+    const mode = readVoiceMode(message.mode);
+    const brief = mode === 'prompt'
+      ? promptBrief(language, message.prompt)
+      : briefFromParts(language, textList(message.lines), textList(message.topics), typeof message.closing === 'string' ? message.closing : '');
     return new OpenAiRealtime(apiKey, readRealtimeModel(message.model), 'pcm', brief.instructions, brief.greeting, {
       onReady: () => {
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'ready' }));
@@ -265,7 +270,7 @@ export class TelephonyService {
 
   private speakLive(socket: WebSocket, session: PhoneScenarioSession, pending: PendingCall, log: CallLog, apiKey: string) {
     const language = pending.chosenLanguage ?? pending.languages[0] ?? 'en';
-    const brief = realtimeBrief(pending.graph, language);
+    const brief = pending.voiceMode === 'prompt' ? promptBrief(language, pending.voicePrompt) : realtimeBrief(pending.graph, language);
     let ready = false;
     const realtime = new OpenAiRealtime(apiKey, pending.realtimeModel, 'pcmu', brief.instructions, brief.greeting, {
       onReady: () => {
@@ -345,6 +350,8 @@ export class TelephonyService {
       scenarioId: scenario.id,
       startedById: scenario.startedById,
       realtimeModel: scenario.realtimeModel,
+      voiceMode: scenario.voiceMode,
+      voicePrompt: scenario.voicePrompt,
       expires: Date.now() + 60_000,
     };
     if (log) {
@@ -429,7 +436,7 @@ export class TelephonyService {
   private async publishedScenario(to: string) {
     const number = await this.prisma.phoneNumber.findUnique({
       where: { e164: to },
-      select: { scenario: { select: { id: true, active: true, graph: true, languages: true, languageModels: true, askLanguage: true, realtimeModel: true, createdById: true } } },
+      select: { scenario: { select: { id: true, active: true, graph: true, languages: true, languageModels: true, askLanguage: true, realtimeModel: true, voiceMode: true, voicePrompt: true, createdById: true } } },
     });
     if (!number?.scenario?.active) return null;
     const languages = number.scenario.languages.filter(isScenarioLanguage);
@@ -440,6 +447,8 @@ export class TelephonyService {
       languageModels: languageModelsFor(languages, number.scenario.languageModels, false),
       askLanguage: number.scenario.askLanguage,
       realtimeModel: readRealtimeModel(number.scenario.realtimeModel),
+      voiceMode: readVoiceMode(number.scenario.voiceMode),
+      voicePrompt: readVoicePrompt(number.scenario.voicePrompt),
       graph: readScenarioGraph(number.scenario.graph),
     };
   }

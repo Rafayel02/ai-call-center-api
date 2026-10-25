@@ -146,6 +146,8 @@ model Scenario {
   languageModels Json         @default("{}") @map("language_models")
   askLanguage    Boolean      @default(false) @map("ask_language")
   realtimeModel  String       @default("gpt-realtime") @map("realtime_model")
+  voiceMode      String       @default("scenario") @map("voice_mode")
+  voicePrompt    String       @default("") @map("voice_prompt")
   active         Boolean      @default(false)
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @updatedAt @map("updated_at")
