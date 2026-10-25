@@ -4,6 +4,8 @@ import { DEFAULT_REALTIME_MODEL, readRealtimeModel } from './realtime-models';
 
 test('an unknown live voice model falls back to the Armenian-listed default', () => {
   assert.equal(readRealtimeModel('gpt-realtime-2.1'), 'gpt-realtime-2.1');
+  assert.equal(readRealtimeModel('gpt-realtime-1.5'), 'gpt-realtime-1.5');
+  assert.equal(readRealtimeModel('gpt-realtime-2'), 'gpt-realtime-2');
   assert.equal(readRealtimeModel('gpt-4o'), DEFAULT_REALTIME_MODEL);
   assert.equal(readRealtimeModel(undefined), DEFAULT_REALTIME_MODEL);
 });
