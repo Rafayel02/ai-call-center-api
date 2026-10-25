@@ -21,6 +21,21 @@ interface GeminiMessage {
   };
 }
 
+export function geminiSetup(model: string, instructions: string) {
+  return {
+    setup: {
+      model: `models/${model}`,
+      generationConfig: { responseModalities: ['AUDIO'] },
+      systemInstruction: { parts: [{ text: instructions }] },
+    },
+  };
+}
+
+function publicMessage(text: string, fallback: string) {
+  const cleaned = text.replace(/key=[^&\s]+/gi, 'key').replace(/AIza[0-9A-Za-z_-]+/g, '').trim();
+  return cleaned.slice(0, 300) || fallback;
+}
+
 /** Speech-to-speech session on Gemini Live. The caller still sends the existing phone or browser audio. */
 export class GeminiRealtime {
   readonly done: Promise<boolean>;
@@ -29,6 +44,7 @@ export class GeminiRealtime {
   private greeted = false;
   private ready = false;
   private settled = false;
+  private reported = false;
   private finish: ((ready: boolean) => void) | null = null;
 
   constructor(
@@ -41,14 +57,24 @@ export class GeminiRealtime {
   ) {
     this.socket = new WebSocket(
       `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`,
+      { perMessageDeflate: false },
     );
     this.done = new Promise((resolve) => {
       this.finish = resolve;
     });
     this.socket.on('open', () => this.configure());
     this.socket.on('message', (data) => this.take(data.toString()));
-    this.socket.on('error', () => this.handlers.onError?.('Could not reach Gemini.'));
-    this.socket.on('close', () => this.stop(this.ready));
+    this.socket.on('error', (error) => {
+      const text = error instanceof Error ? error.message : '';
+      this.report(publicMessage(text, 'Could not reach Gemini.'));
+    });
+    this.socket.on('close', (code, reason) => {
+      if (!this.ready) {
+        const text = Buffer.isBuffer(reason) ? reason.toString('utf8') : '';
+        this.report(publicMessage(text, `Gemini closed the call (${code}).`));
+      }
+      this.stop(this.ready);
+    });
   }
 
   sendAudio(audio: string) {
@@ -68,15 +94,7 @@ export class GeminiRealtime {
   }
 
   private configure() {
-    this.socket.send(
-      JSON.stringify({
-        setup: {
-          model: `models/${this.model}`,
-          responseModalities: ['AUDIO'],
-          systemInstruction: { parts: [{ text: this.instructions }] },
-        },
-      }),
-    );
+    this.socket.send(JSON.stringify(geminiSetup(this.model, this.instructions)));
   }
 
   private push(audio: string) {
@@ -96,7 +114,7 @@ export class GeminiRealtime {
     }
     if (event.error) {
       const message = typeof event.error.message === 'string' ? event.error.message : '';
-      this.handlers.onError?.(message || 'Gemini could not continue the call.');
+      this.report(publicMessage(message, 'Gemini could not continue the call.'));
       return;
     }
     if ('setupComplete' in event && !this.greeted) {
@@ -112,6 +130,12 @@ export class GeminiRealtime {
       const audio = part.inlineData?.data;
       if (typeof audio === 'string' && audio) this.handlers.onAudio(fromGeminiOutput(audio, this.format));
     }
+  }
+
+  private report(message: string) {
+    if (this.reported) return;
+    this.reported = true;
+    this.handlers.onError?.(message);
   }
 
   private stop(ready: boolean) {
