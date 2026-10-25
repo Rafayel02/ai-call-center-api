@@ -22,6 +22,7 @@ enum TtsProvider {
 
 enum LlmProvider {
   OPENAI
+  GEMINI
 }
 
 enum PhoneStreamProvider {

@@ -1,14 +1,18 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { LlmProvider } from '@prisma/client';
 import { LlmProviderClient } from './llm-provider';
+import { GeminiProvider } from './gemini.provider';
 import { OpenAiProvider } from './openai.provider';
 
 @Injectable()
 export class ProviderRegistry {
   private readonly providers: Map<LlmProvider, LlmProviderClient>;
 
-  constructor(openAi: OpenAiProvider) {
-    this.providers = new Map<LlmProvider, LlmProviderClient>([[openAi.id, openAi]]);
+  constructor(openAi: OpenAiProvider, gemini: GeminiProvider) {
+    this.providers = new Map<LlmProvider, LlmProviderClient>([
+      [openAi.id, openAi],
+      [gemini.id, gemini],
+    ]);
   }
 
   get(provider: LlmProvider): LlmProviderClient {

@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { IncomingMessage } from 'node:http';
 import { WebSocket } from 'ws';
-import { ExecutionStatus } from '@prisma/client';
+import { ExecutionStatus, LlmProvider } from '@prisma/client';
 import { LlmService } from '../llm/llm.service';
 import { ScenarioExecutionsService } from '../scenario-executions/scenario-executions.service';
 import { PhoneStreamingService } from '../phone-streaming/phone-streaming.service';
@@ -14,13 +14,20 @@ import { TextToSpeechService } from '../text-to-speech/text-to-speech.service';
 import { CallLog, PhoneCallLog, silentLog } from './call-log';
 import { mintCallToken, readCallToken } from './call-token';
 import { CallDeps, PhoneScenarioSession } from './call-session';
+import { GeminiRealtime } from './gemini-realtime';
 import { OpenAiRealtime } from './openai-realtime';
 import { briefFromParts, promptBrief, readVoiceMode, readVoicePrompt, realtimeBrief, VoiceMode } from './realtime-brief';
-import { readRealtimeModel } from './realtime-models';
+import { isGeminiLiveModel, readRealtimeModel } from './realtime-models';
 import { isTwilioSignature } from './twilio-signature';
 import { ScenarioLanguage, ScenarioLanguageModels, isScenarioLanguage, languageKeyLine, languageModelsFor } from '../scenarios/scenario-languages';
 import { decodeUlaw, pcmWav } from './ulaw';
 import { hangupTwiml, sayTwiml, streamTwiml } from './twiml';
+
+interface LiveVoice {
+  sendAudio(audio: string): void;
+  close(): void;
+  readonly done: Promise<boolean>;
+}
 
 const MISSING = 'Add a Twilio phone streaming service before taking phone calls.';
 const NOT_READY = 'This number is not ready to take calls.';
@@ -128,11 +135,16 @@ export class TelephonyService {
     socket.on('close', () => session.hangUp());
     const log = await this.openLog(pending);
     session.useLog(log);
-    const apiKey = await this.llm.realtimeKey();
+    const gemini = isGeminiLiveModel(pending.realtimeModel);
+    const apiKey = await this.llm.realtimeKey(gemini ? LlmProvider.GEMINI : LlmProvider.OPENAI);
     try {
       if (apiKey) {
         const ready = await this.speakLive(socket, session, pending, log, apiKey);
         await log.finish(ready ? ExecutionStatus.FINISHED : ExecutionStatus.FAILED, ready ? undefined : 'The live voice did not start.');
+      } else if (gemini) {
+        this.logger.warn('No enabled Gemini key, so the live call could not start.');
+        await log.finish(ExecutionStatus.FAILED, 'Add an enabled Gemini key under LLMs before using this voice.');
+        socket.close();
       } else {
         this.logger.warn('No enabled OpenAI model, so the call used the slower scenario path.');
         socket.on('message', (data) => session.receive(String(data)));
@@ -210,7 +222,7 @@ export class TelephonyService {
       socket.close(1008, 'The talk token is not valid.');
       return;
     }
-    let realtime: OpenAiRealtime | null = null;
+    let realtime: LiveVoice | null = null;
     let starting = false;
     const queued: string[] = [];
     const stop = () => realtime?.close();
@@ -239,10 +251,25 @@ export class TelephonyService {
     });
   }
 
+  private liveSession(
+    apiKey: string,
+    model: string,
+    format: 'pcmu' | 'pcm',
+    brief: { instructions: string; greeting: string },
+    handlers: ConstructorParameters<typeof OpenAiRealtime>[5],
+  ): LiveVoice {
+    return isGeminiLiveModel(model)
+      ? new GeminiRealtime(apiKey, model, format, brief.instructions, brief.greeting, handlers)
+      : new OpenAiRealtime(apiKey, model, format, brief.instructions, brief.greeting, handlers);
+  }
+
   private async beginTalk(socket: WebSocket, message: { language?: string; lines?: unknown; topics?: unknown; closing?: unknown; model?: unknown; mode?: unknown; prompt?: unknown }) {
-    const apiKey = await this.llm.realtimeKey();
+    const model = readRealtimeModel(message.model);
+    const gemini = isGeminiLiveModel(model);
+    const apiKey = await this.llm.realtimeKey(gemini ? LlmProvider.GEMINI : LlmProvider.OPENAI);
     if (!apiKey) {
-      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'error', message: 'Add an enabled OpenAI model before talking.' }));
+      const text = gemini ? 'Add an enabled Gemini key under LLMs before using this voice.' : 'Add an enabled OpenAI model before talking.';
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'error', message: text }));
       socket.close();
       return null;
     }
@@ -251,7 +278,7 @@ export class TelephonyService {
     const brief = mode === 'prompt'
       ? promptBrief(language, message.prompt)
       : briefFromParts(language, textList(message.lines), textList(message.topics), typeof message.closing === 'string' ? message.closing : '');
-    return new OpenAiRealtime(apiKey, readRealtimeModel(message.model), 'pcm', brief.instructions, brief.greeting, {
+    return this.liveSession(apiKey, model, 'pcm', brief, {
       onReady: () => {
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'ready' }));
       },
@@ -272,7 +299,7 @@ export class TelephonyService {
     const language = pending.chosenLanguage ?? pending.languages[0] ?? 'en';
     const brief = pending.voiceMode === 'prompt' ? promptBrief(language, pending.voicePrompt) : realtimeBrief(pending.graph, language);
     let ready = false;
-    const realtime = new OpenAiRealtime(apiKey, pending.realtimeModel, 'pcmu', brief.instructions, brief.greeting, {
+    const realtime = this.liveSession(apiKey, pending.realtimeModel, 'pcmu', brief, {
       onReady: () => {
         ready = true;
       },

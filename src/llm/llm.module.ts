@@ -2,13 +2,14 @@ import { Module } from '@nestjs/common';
 import { ScenarioExecutionsModule } from '../scenario-executions/scenario-executions.module';
 import { LlmController } from './llm.controller';
 import { LlmService } from './llm.service';
+import { GeminiProvider } from './providers/gemini.provider';
 import { OpenAiProvider } from './providers/openai.provider';
 import { ProviderRegistry } from './providers/provider.registry';
 
 @Module({
   imports: [ScenarioExecutionsModule],
   controllers: [LlmController],
-  providers: [LlmService, ProviderRegistry, OpenAiProvider],
+  providers: [LlmService, ProviderRegistry, OpenAiProvider, GeminiProvider],
   exports: [LlmService],
 })
 export class LlmModule {}

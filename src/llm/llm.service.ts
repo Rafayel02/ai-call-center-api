@@ -422,8 +422,8 @@ export class LlmService {
     return provider.test(config);
   }
 
-  async realtimeKey() {
-    const model = await this.prisma.llmModel.findFirst({ where: { enabled: true, provider: 'OPENAI' }, orderBy: { createdAt: 'asc' } });
+  async realtimeKey(which: LlmProvider = 'OPENAI') {
+    const model = await this.prisma.llmModel.findFirst({ where: { enabled: true, provider: which }, orderBy: { createdAt: 'asc' } });
     if (!model) return null;
     const provider = this.providers.get(model.provider);
     if (!provider.readApiKey) return null;
