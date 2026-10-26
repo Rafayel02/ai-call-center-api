@@ -8,7 +8,8 @@ import { SaveScenarioGraphDto } from './dto/save-scenario-graph.dto';
 import { emptyScenarioGraph, parseScenarioGraph, readScenarioGraph } from './scenario-graph';
 import { LANGUAGE_NAME, ScenarioLanguage, applyTranslations, clearGraphModels, detectScript, emptyVoice, isScenarioLanguage, languageModelsFor, modelsOnGraph, spokenSample, spokenSlots, stampLanguage } from './scenario-languages';
 import { readVoiceMode, readVoicePrompt } from '../telephony/realtime-brief';
-import { LEARN_SYSTEM, NOTES_SYSTEM, SOURCE_LIMIT, SOURCE_TEXT_LIMIT, VoiceSource, publicVoiceSource, readLearnedPrompt, readNotes, readTranslatedPrompt, readVoicePrompts, readVoiceSources, sourceBatches, translateSystem } from './voice-context';
+import { KnowledgeService } from './knowledge.service';
+import { SOURCE_LIMIT, SOURCE_TEXT_LIMIT, VoiceSource, publicVoiceSource, readTranslatedPrompt, readVoicePrompts, readVoiceSources, translateSystem } from './voice-context';
 import { PAGE_TEXT_LIMIT, THIN_SITE_PAGES, pageIdentity, siteHost } from './site-pages';
 import { CrawledPage, crawlSite, textFromUpload } from './voice-sources';
 import { readRealtimeModel } from '../telephony/realtime-models';
@@ -35,6 +36,7 @@ export class ScenariosService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly llm: LlmService,
+    private readonly knowledge: KnowledgeService,
   ) {}
 
   async onModuleInit() {
@@ -251,22 +253,13 @@ export class ScenariosService implements OnModuleInit {
     let sources = readVoiceSources(scenario.voiceSources);
     if (sources.length === 0) throw new BadRequestException('Add a file or a link before learning.');
     sources = await this.expandThinSites(id, sources);
-    const prompts = readVoicePrompts(current && typeof current === 'object' ? current : scenario.voicePrompts, scenario.voicePrompt);
-    const notes = await this.notesFromSources(sources);
-    if (!notes.trim()) throw new BadRequestException('Learning did not find facts in the sources.');
-    const raw = await this.llm.writeJson(LEARN_SYSTEM, `Write the full reference from these notes. Keep every plan, price, and condition on its own entry. Do not turn this into a short welcome.\n\n${notes}`);
-    let english: string;
-    try {
-      english = readLearnedPrompt(raw);
-    } catch {
-      throw new BadRequestException('Learning did not return an English prompt.');
-    }
-    const next = { ...prompts, en: english };
+    const indexed = await this.knowledge.indexScenario(id, sources);
+    const next = { hy: indexed.guide, en: indexed.guide, ru: indexed.guide };
     await this.prisma.scenario.update({
       where: { id },
       data: { voicePrompts: next as unknown as Prisma.InputJsonValue, voicePrompt: next.hy },
     });
-    return { voicePrompts: next, voiceSources: sources.map(publicVoiceSource) };
+    return { voicePrompts: next, voiceSources: sources.map(publicVoiceSource), passages: indexed.passages };
   }
 
   async translateContext(id: string, current: unknown) {
@@ -322,31 +315,6 @@ export class ScenariosService implements OnModuleInit {
     return next;
   }
 
-  private async notesFromSources(sources: VoiceSource[]) {
-    const batches = sourceBatches(sources);
-    const notes = await mapPool(batches, 3, async (batch) => {
-      let raw = '';
-      try {
-        raw = await this.llm.writeJson(NOTES_SYSTEM, batch);
-        return readNotes(raw);
-      } catch (error) {
-        if (error instanceof BadRequestException) throw error;
-        this.logger.warn(`Context notes were not readable: ${raw.slice(0, 300)}`);
-        return '';
-      }
-    });
-    const gathered = notes.filter(Boolean).join('\n\n').trim();
-    if (gathered) return gathered.slice(0, 60_000);
-    const pages = sources
-      .map((source) => source.text.trim())
-      .filter((text) => text.length >= 30)
-      .map((text, index) => `Page ${index + 1}\n${text.slice(0, 12_000)}`)
-      .join('\n\n')
-      .slice(0, 60_000);
-    if (!pages) throw new BadRequestException('Learning did not find facts in the sources.');
-    return pages;
-  }
-
   private async translatePrompt(english: string, language: 'hy' | 'ru') {
     const raw = await this.llm.writeJson(translateSystem(language), english, 'Add an enabled OpenAI model before translating.');
     try {
@@ -377,20 +345,6 @@ function unseenPages(sources: VoiceSource[], pages: CrawledPage[]): VoiceSource[
 
 function sourceMark(sources: VoiceSource[]) {
   return sources.map((source) => `${source.url ?? source.id}\n${source.text}`).join('\n');
-}
-
-async function mapPool<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>) {
-  const results = new Array<R>(items.length);
-  let cursor = 0;
-  async function run() {
-    while (cursor < items.length) {
-      const index = cursor;
-      cursor += 1;
-      results[index] = await worker(items[index]);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => run()));
-  return results;
 }
 
 function presentScenario<T extends { languages: string[]; languageModels: Prisma.JsonValue; graph: Prisma.JsonValue; realtimeModel: string; voiceMode: string; voicePrompt: string; voicePrompts: Prisma.JsonValue; voiceSources: Prisma.JsonValue }>(scenario: T) {

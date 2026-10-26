@@ -12,9 +12,16 @@ interface GeminiPart {
   inlineData?: { data?: unknown };
 }
 
+interface GeminiCall {
+  id?: string;
+  name?: string;
+  args?: { query?: unknown };
+}
+
 interface GeminiMessage {
   setupComplete?: unknown;
   error?: { message?: unknown };
+  toolCall?: { functionCalls?: GeminiCall[] };
   serverContent?: {
     interrupted?: unknown;
     modelTurn?: { parts?: GeminiPart[] };
@@ -54,6 +61,7 @@ export class GeminiRealtime {
     private readonly instructions: string,
     private readonly greeting: string,
     private readonly handlers: RealtimeHandlers,
+    private readonly lookup?: (query: string) => Promise<string>,
   ) {
     this.socket = new WebSocket(
       `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`,
@@ -94,7 +102,31 @@ export class GeminiRealtime {
   }
 
   private configure() {
-    this.socket.send(JSON.stringify(geminiSetup(this.model, this.instructions)));
+    const setup = geminiSetup(this.model, this.instructions).setup;
+    this.socket.send(
+      JSON.stringify({
+        setup: this.lookup
+          ? {
+              ...setup,
+              tools: [
+                {
+                  functionDeclarations: [
+                    {
+                      name: 'search_knowledge',
+                      description: 'Search the line documents and return the passages that answer the caller. Call this before every factual answer.',
+                      parameters: {
+                        type: 'OBJECT',
+                        properties: { query: { type: 'STRING', description: 'The caller question.' } },
+                        required: ['query'],
+                      },
+                    },
+                  ],
+                },
+              ],
+            }
+          : setup,
+      }),
+    );
   }
 
   private push(audio: string) {
@@ -125,11 +157,24 @@ export class GeminiRealtime {
       for (const audio of queued) this.push(audio);
       this.socket.send(JSON.stringify({ realtimeInput: { text: `Greet the caller now, in one short sentence: ${this.greeting}` } }));
     }
+    if (event.toolCall?.functionCalls?.length && this.lookup) void this.answerTools(event.toolCall.functionCalls);
     if (event.serverContent?.interrupted) this.handlers.onClear();
     for (const part of event.serverContent?.modelTurn?.parts ?? []) {
       const audio = part.inlineData?.data;
       if (typeof audio === 'string' && audio) this.handlers.onAudio(fromGeminiOutput(audio, this.format));
     }
+  }
+
+  private async answerTools(calls: GeminiCall[]) {
+    const lookup = this.lookup;
+    if (!lookup || this.socket.readyState !== WebSocket.OPEN) return;
+    const functionResponses = [];
+    for (const call of calls) {
+      const query = typeof call.args?.query === 'string' ? call.args.query : '';
+      const passages = await lookup(query).catch(() => 'No passage matches this question.');
+      functionResponses.push({ id: call.id, name: call.name || 'search_knowledge', response: { passages } });
+    }
+    if (this.socket.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify({ toolResponse: { functionResponses } }));
   }
 
   private report(message: string) {

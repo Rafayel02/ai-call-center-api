@@ -161,10 +161,24 @@ model Scenario {
   phoneCalls     PhoneCall[]
   demoProfiles   DemoProfile[]
   demoSessions   DemoSession[]
+  knowledge      ScenarioKnowledge[]
 
   @@index([organizationId])
   @@index([createdById])
   @@map("scenarios")
+}
+
+model ScenarioKnowledge {
+  id         String   @id @default(uuid()) @db.Uuid
+  scenarioId String   @map("scenario_id") @db.Uuid
+  scenario   Scenario @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+  sourceName String   @map("source_name")
+  text       String
+  embedding  Bytes
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([scenarioId])
+  @@map("scenario_knowledge")
 }
 
 model ScenarioExecution {

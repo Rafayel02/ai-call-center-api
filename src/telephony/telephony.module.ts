@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { LlmModule } from '../llm/llm.module';
+import { ScenariosModule } from '../scenarios/scenarios.module';
 import { ScenarioExecutionsModule } from '../scenario-executions/scenario-executions.module';
 import { PhoneStreamingModule } from '../phone-streaming/phone-streaming.module';
 import { SpeechToTextModule } from '../speech-to-text/speech-to-text.module';
@@ -9,7 +10,7 @@ import { TalkController } from './talk.controller';
 import { TelephonyService } from './telephony.service';
 
 @Module({
-  imports: [PhoneStreamingModule, TextToSpeechModule, SpeechToTextModule, LlmModule, ScenarioExecutionsModule],
+  imports: [PhoneStreamingModule, TextToSpeechModule, SpeechToTextModule, LlmModule, ScenarioExecutionsModule, ScenariosModule],
   controllers: [TelephonyController, TalkController],
   providers: [TelephonyService],
   exports: [TelephonyService],

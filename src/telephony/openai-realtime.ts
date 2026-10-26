@@ -15,6 +15,9 @@ export class OpenAiRealtime {
   private greeted = false;
   private ready = false;
   private settled = false;
+  private turn = 0;
+  private answering: number | null = null;
+  private transcriptTimer: ReturnType<typeof setTimeout> | null = null;
   private finish: ((ready: boolean) => void) | null = null;
 
   constructor(
@@ -24,6 +27,7 @@ export class OpenAiRealtime {
     private readonly instructions: string,
     private readonly greeting: string,
     private readonly handlers: RealtimeHandlers,
+    private readonly lookup?: (query: string) => Promise<string>,
   ) {
     this.socket = new WebSocket(`wss://api.openai.com/v1/realtime?model=${encodeURIComponent(this.model)}`, {
       headers: { Authorization: `Bearer ${apiKey}` },
@@ -65,7 +69,11 @@ export class OpenAiRealtime {
           type: 'realtime',
           output_modalities: ['audio'],
           audio: {
-            input: { format: audioFormat, turn_detection: { type: 'server_vad' } },
+            input: {
+              format: audioFormat,
+              ...(this.lookup ? { transcription: { model: 'gpt-4o-mini-transcribe' } } : {}),
+              turn_detection: this.lookup ? { type: 'server_vad', create_response: false } : { type: 'server_vad' },
+            },
             output: { format: audioFormat, voice: 'marin' },
           },
           instructions: this.instructions,
@@ -93,8 +101,21 @@ export class OpenAiRealtime {
       );
     }
     if (event.type === 'input_audio_buffer.speech_started') {
+      this.turn += 1;
+      if (this.transcriptTimer) clearTimeout(this.transcriptTimer);
       this.handlers.onClear();
       if (this.socket.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify({ type: 'response.cancel' }));
+    }
+    if (event.type === 'input_audio_buffer.speech_stopped' && this.lookup) {
+      const turn = this.turn;
+      if (this.transcriptTimer) clearTimeout(this.transcriptTimer);
+      this.transcriptTimer = setTimeout(() => {
+        if (turn === this.turn) void this.answer(turn, '');
+      }, 2500);
+    }
+    if (event.type === 'conversation.item.input_audio_transcription.completed' && this.lookup) {
+      const transcript = typeof (event as { transcript?: unknown }).transcript === 'string' ? (event as { transcript: string }).transcript : '';
+      void this.answer(this.turn, transcript);
     }
     if ((event.type === 'response.output_audio.delta' || event.type === 'response.audio.delta') && typeof event.delta === 'string' && event.delta) {
       this.handlers.onAudio(event.delta);
@@ -106,7 +127,29 @@ export class OpenAiRealtime {
     }
   }
 
+  private async answer(turn: number, transcript: string) {
+    if (!this.lookup || turn !== this.turn || this.answering === turn || this.socket.readyState !== WebSocket.OPEN) return;
+    this.answering = turn;
+    if (this.transcriptTimer) clearTimeout(this.transcriptTimer);
+    const passages = await this.lookup(transcript).catch(() => 'No passage matches this question.');
+    if (this.turn !== turn || this.socket.readyState !== WebSocket.OPEN) return;
+    this.socket.send(
+      JSON.stringify({
+        type: 'response.create',
+        response: {
+          instructions: [
+            this.instructions,
+            `Passages from the documents:\n${passages}`,
+            transcript.trim() ? `The caller said: ${transcript.trim()}` : 'The caller was unclear.',
+            'Answer now in one or two short sentences. Use only the passages.',
+          ].join('\n\n'),
+        },
+      }),
+    );
+  }
+
   private stop(ready: boolean) {
+    if (this.transcriptTimer) clearTimeout(this.transcriptTimer);
     if (this.settled) return;
     this.settled = true;
     this.finish?.(ready);

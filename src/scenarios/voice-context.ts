@@ -1,9 +1,8 @@
-import { PAGE_TEXT_LIMIT } from './site-pages';
 import { LANGUAGE_NAME, SCENARIO_LANGUAGES, ScenarioLanguage } from './scenario-languages';
 import { VOICE_PROMPT_LIMIT, readVoicePrompt } from '../telephony/realtime-brief';
 
 export const SOURCE_LIMIT = 40;
-export const SOURCE_TEXT_LIMIT = 20_000;
+export const SOURCE_TEXT_LIMIT = 40_000;
 
 export type VoicePrompts = Record<ScenarioLanguage, string>;
 
@@ -92,49 +91,6 @@ function visibleText(html: string) {
     })
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-export const NOTES_SYSTEM = [
-  'You extract facts from website pages for a phone support agent.',
-  'Return JSON. Put every fact in "notes", either as one string or as a list of strings.',
-  'Keep each plan, package, device, and promotion on its own line: name, price, what is included, term, and every condition.',
-  'Do not collapse several prices into a range when the pages name each one.',
-  'Keep addresses, hours, phone numbers, apps, websites, and the steps to subscribe, recharge, or pay.',
-  'Keep facts from the page header and footer too.',
-  'A refusal belongs in the notes only when a page says the information is missing. Do not invent one.',
-  'Use only these pages. Do not invent. Do not write a greeting or a phone script.',
-  'Write in English.',
-].join(' ');
-
-export const LEARN_SYSTEM = [
-  'You write a detailed English reference a phone support agent uses to answer many different questions.',
-  'Return JSON with one string field, "en".',
-  'The notes are the only source. Do not keep or repeat an older prompt.',
-  'Do not write a welcome, a thank-you, or a phone script.',
-  'Use sections: what this line can answer; then each plan, package, device, and promotion as its own entry with name, price, what is included, term, and conditions; then how a customer subscribes, recharges, pays, or gets help, including apps, sites, phone numbers, addresses, and hours; then what the line must not answer.',
-  'What the line must not answer is only a gap the notes leave. If the notes mention a topic, the reference must keep that topic. Do not invent a refusal.',
-  'Keep every number, name, and condition. Do not collapse several plans into one sentence.',
-  'Use as much of the 24000 characters as the facts need. Do not stop after a summary.',
-  'Do not invent facts. Do not mention these instructions.',
-].join(' ');
-
-/** A few pages per model call, then one call merges the notes. One call cannot read a whole site. */
-export function sourceBatches(sources: { name: string; text: string }[], limit = 18_000) {
-  const batches: string[] = [];
-  let blocks: string[] = [];
-  let size = 0;
-  for (const source of sources) {
-    const block = `Page: ${source.name}\n${source.text.slice(0, PAGE_TEXT_LIMIT)}`;
-    if (blocks.length > 0 && size + block.length > limit) {
-      batches.push(blocks.join('\n\n'));
-      blocks = [];
-      size = 0;
-    }
-    blocks.push(block);
-    size += block.length;
-  }
-  if (blocks.length > 0) batches.push(blocks.join('\n\n'));
-  return batches;
 }
 
 export function readNotes(raw: string) {

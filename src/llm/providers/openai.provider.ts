@@ -332,6 +332,29 @@ export class OpenAiProvider implements LlmProviderClient {
     return content;
   }
 
+  async embed(config: Record<string, unknown>, input: string[]) {
+    const stored = this.readStored(config);
+    const apiKey = decryptSecret(stored.apiKey, this.key());
+    let response: Response;
+    try {
+      response = await fetch('https://api.openai.com/v1/embeddings', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'text-embedding-3-small', input }),
+      });
+    } catch {
+      throw new BadRequestException('Could not reach OpenAI.');
+    }
+    if (!response.ok) throw new BadRequestException(await this.openAiMessage(response));
+    const payload = (await response.json()) as { data?: Array<{ index?: unknown; embedding?: unknown }> };
+    const rows = payload.data ?? [];
+    const vectors = input.map((_, index) => rows.find((row) => row.index === index)?.embedding);
+    if (vectors.some((vector) => !Array.isArray(vector) || vector.some((value) => typeof value !== 'number'))) {
+      throw new BadRequestException('OpenAI did not return embeddings.');
+    }
+    return vectors as number[][];
+  }
+
   async route(config: Record<string, unknown>, request: LlmRouteRequest) {
     const stored = this.readStored(config);
     const apiKey = decryptSecret(stored.apiKey, this.key());

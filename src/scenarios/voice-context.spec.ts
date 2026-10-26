@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { LEARN_SYSTEM, pageText, readLearnedPrompt, readNotes, readTranslatedPrompt, readVoicePrompts, readVoiceSources, sourceBatches } from './voice-context';
+import { pageText, readLearnedPrompt, readNotes, readTranslatedPrompt, readVoicePrompts, readVoiceSources } from './voice-context';
 import { isPrivateAddress } from './voice-sources';
 
 test('a private address cannot be used as a context link', () => {
@@ -28,20 +28,7 @@ test('a page keeps its words and drops the markup', () => {
   assert.doesNotMatch(text, /Plans Menu/);
 });
 
-test('learning rewrites the English prompt from page notes, in batches', () => {
-  assert.match(LEARN_SYSTEM, /Do not keep or repeat an older prompt/);
-  assert.match(LEARN_SYSTEM, /own entry/);
-  assert.match(LEARN_SYSTEM, /Do not write a welcome/);
-  assert.doesNotMatch(LEARN_SYSTEM, /Keep facts already/);
-  const batches = sourceBatches(
-    [
-      { name: 'hours', text: 'x'.repeat(10_000) },
-      { name: 'plans', text: 'y'.repeat(10_000) },
-    ],
-    6_000,
-  );
-  assert.equal(batches.length, 2);
-  assert.match(batches[0], /Page: hours/);
+test('a fact list is kept as text', () => {
   assert.equal(readNotes('{"notes":" Open 9 to 6. "}'), 'Open 9 to 6.');
   assert.equal(readNotes('{"notes":["Open 9 to 6","Northern Avenue 1"]}'), 'Open 9 to 6\nNorthern Avenue 1');
   assert.match(readNotes('{"facts":{"hours":"9 to 6","address":"Northern Avenue 1"}}'), /Northern Avenue 1/);

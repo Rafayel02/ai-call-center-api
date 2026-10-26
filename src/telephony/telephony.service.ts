@@ -16,6 +16,7 @@ import { mintCallToken, readCallToken } from './call-token';
 import { CallDeps, PhoneScenarioSession } from './call-session';
 import { GeminiRealtime } from './gemini-realtime';
 import { OpenAiRealtime } from './openai-realtime';
+import { KnowledgeService } from '../scenarios/knowledge.service';
 import { briefFromParts, promptBrief, readVoiceMode, readVoicePrompt, realtimeBrief, VoiceMode } from './realtime-brief';
 import { VoicePrompts, readVoicePrompts, voicePromptFor } from '../scenarios/voice-context';
 import { isGeminiLiveModel, readRealtimeModel } from './realtime-models';
@@ -66,6 +67,7 @@ export class TelephonyService {
     private readonly llm: LlmService,
     private readonly executions: ScenarioExecutionsService,
     private readonly config: ConfigService,
+    private readonly knowledge: KnowledgeService,
   ) {}
 
   async answer(input: { origin: string; path: string; params: Record<string, string>; signature: string | undefined }) {
@@ -230,7 +232,7 @@ export class TelephonyService {
     const stop = () => realtime?.close();
     socket.on('close', stop);
     socket.on('message', (data) => {
-      let message: { type?: string; audio?: string; language?: string; lines?: unknown; topics?: unknown; closing?: unknown; model?: unknown; mode?: unknown; prompt?: unknown };
+      let message: { type?: string; audio?: string; language?: string; lines?: unknown; topics?: unknown; closing?: unknown; model?: unknown; mode?: unknown; prompt?: unknown; scenarioId?: unknown };
       try {
         message = JSON.parse(String(data)) as typeof message;
       } catch {
@@ -259,13 +261,14 @@ export class TelephonyService {
     format: 'pcmu' | 'pcm',
     brief: { instructions: string; greeting: string },
     handlers: ConstructorParameters<typeof OpenAiRealtime>[5],
+    lookup?: (query: string) => Promise<string>,
   ): LiveVoice {
     return isGeminiLiveModel(model)
-      ? new GeminiRealtime(apiKey, model, format, brief.instructions, brief.greeting, handlers)
-      : new OpenAiRealtime(apiKey, model, format, brief.instructions, brief.greeting, handlers);
+      ? new GeminiRealtime(apiKey, model, format, brief.instructions, brief.greeting, handlers, lookup)
+      : new OpenAiRealtime(apiKey, model, format, brief.instructions, brief.greeting, handlers, lookup);
   }
 
-  private async beginTalk(socket: WebSocket, message: { language?: string; lines?: unknown; topics?: unknown; closing?: unknown; model?: unknown; mode?: unknown; prompt?: unknown }) {
+  private async beginTalk(socket: WebSocket, message: { language?: string; lines?: unknown; topics?: unknown; closing?: unknown; model?: unknown; mode?: unknown; prompt?: unknown; scenarioId?: unknown }) {
     const model = readRealtimeModel(message.model);
     const gemini = isGeminiLiveModel(model);
     const apiKey = await this.llm.realtimeKey(gemini ? LlmProvider.GEMINI : LlmProvider.OPENAI);
@@ -280,6 +283,7 @@ export class TelephonyService {
     const brief = mode === 'prompt'
       ? promptBrief(language, message.prompt)
       : briefFromParts(language, textList(message.lines), textList(message.topics), typeof message.closing === 'string' ? message.closing : '');
+    const lookup = mode === 'prompt' ? await this.contextLookup(message.scenarioId) : undefined;
     return this.liveSession(apiKey, model, 'pcm', brief, {
       onReady: () => {
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'ready' }));
@@ -294,12 +298,13 @@ export class TelephonyService {
         this.logger.warn(`Live voice: ${error}`);
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'error', message: error }));
       },
-    });
+    }, lookup);
   }
 
-  private speakLive(socket: WebSocket, session: PhoneScenarioSession, pending: PendingCall, log: CallLog, apiKey: string) {
+  private async speakLive(socket: WebSocket, session: PhoneScenarioSession, pending: PendingCall, log: CallLog, apiKey: string) {
     const language = pending.chosenLanguage ?? pending.languages[0] ?? 'en';
     const brief = pending.voiceMode === 'prompt' ? promptBrief(language, voicePromptFor(pending.voicePrompts, language)) : realtimeBrief(pending.graph, language);
+    const lookup = pending.voiceMode === 'prompt' ? await this.contextLookup(pending.scenarioId) : undefined;
     let ready = false;
     const realtime = this.liveSession(apiKey, pending.realtimeModel, 'pcmu', brief, {
       onReady: () => {
@@ -319,7 +324,7 @@ export class TelephonyService {
         this.logger.warn(`Live voice: ${message}`);
         if (!ready && socket.readyState === WebSocket.OPEN) socket.close();
       },
-    });
+    }, lookup);
     socket.on('message', (data) => {
       let message: { event?: string; media?: { payload?: string } };
       try {
@@ -335,6 +340,12 @@ export class TelephonyService {
     });
     socket.on('close', () => realtime.close());
     return realtime.done;
+  }
+
+  private async contextLookup(scenarioId: unknown) {
+    if (typeof scenarioId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(scenarioId)) return undefined;
+    const loaded = await this.knowledge.load(scenarioId);
+    return loaded ? (query: string) => loaded.search(query) : undefined;
   }
 
   private async openLog(pending: PendingCall) {

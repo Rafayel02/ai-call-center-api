@@ -8,6 +8,7 @@ import { ReplyAssembler } from './reply-stream';
 import { ExecutionContext } from '../scenario-executions/execution-context';
 import { ScenarioExecutionsService } from '../scenario-executions/scenario-executions.service';
 import { LlmCompletionError, LlmProviderClient } from './providers/llm-provider';
+import { OpenAiProvider } from './providers/openai.provider';
 import { ProviderRegistry } from './providers/provider.registry';
 import { RouteTopic } from './topic-route';
 
@@ -313,6 +314,15 @@ export class LlmService {
     const model = await this.prisma.llmModel.findFirst({ where: { enabled: true, provider: 'OPENAI' }, orderBy: { createdAt: 'asc' } });
     if (!model) throw new BadRequestException(missing);
     return this.providers.get(model.provider).text(model.config as Record<string, unknown>, system, user);
+  }
+
+  async embed(input: string[]) {
+    if (input.length === 0) return [];
+    const model = await this.prisma.llmModel.findFirst({ where: { enabled: true, provider: 'OPENAI' }, orderBy: { createdAt: 'asc' } });
+    if (!model) throw new BadRequestException('Add an enabled OpenAI model before learning.');
+    const client = this.providers.get(model.provider);
+    if (!(client instanceof OpenAiProvider)) throw new BadRequestException('Add an enabled OpenAI model before learning.');
+    return client.embed(model.config as Record<string, unknown>, input);
   }
 
   async translateLines(lines: string[], targetName: string) {

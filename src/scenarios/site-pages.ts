@@ -1,5 +1,5 @@
 export const SITE_PAGE_LIMIT = 30;
-export const PAGE_TEXT_LIMIT = 12_000;
+export const PAGE_TEXT_LIMIT = 40_000;
 export const THIN_SITE_PAGES = 8;
 
 const ASSET = /\.(png|jpe?g|gif|webp|svg|ico|css|js|mjs|map|pdf|zip|gz|rar|mp3|mp4|webm|woff2?|ttf|eot|xml|json|rss|atom)$/i;
