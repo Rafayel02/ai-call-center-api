@@ -63,4 +63,9 @@ export class ScenariosController {
   learnContext(@Param('id', ParseUUIDPipe) id: string, @Body() dto: LearnContextDto) {
     return this.scenarios.learnContext(id, dto.prompts);
   }
+
+  @Post(':id/context/translate')
+  translateContext(@Param('id', ParseUUIDPipe) id: string, @Body() dto: LearnContextDto) {
+    return this.scenarios.translateContext(id, dto.prompts);
+  }
 }

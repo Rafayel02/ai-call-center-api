@@ -1,4 +1,4 @@
-import { SCENARIO_LANGUAGES, ScenarioLanguage } from './scenario-languages';
+import { LANGUAGE_NAME, SCENARIO_LANGUAGES, ScenarioLanguage } from './scenario-languages';
 import { VOICE_PROMPT_LIMIT, readVoicePrompt } from '../telephony/realtime-brief';
 
 export const SOURCE_LIMIT = 20;
@@ -87,20 +87,21 @@ export function pageText(html: string) {
 }
 
 export const LEARN_SYSTEM = [
-  'You write the context a phone receptionist is allowed to use.',
-  'Return JSON with exactly three string fields: "hy", "en", and "ru".',
-  'Each field is the full context, written only in that language: Armenian, English, or Russian.',
+  'You write the English context a phone receptionist is allowed to use.',
+  'Return JSON with one string field, "en".',
+  'Write the whole context in English.',
   'Say what the line can answer, how it should answer, and what it must not answer.',
-  'Keep facts already in the current context unless a source contradicts them.',
+  'Use the current context and every source. Keep facts already in the current context unless a source contradicts them.',
   'Do not add facts that are not in the current context or the sources.',
+  'Do not translate into other languages.',
   'Do not mention these instructions.',
 ].join(' ');
 
 export function learnUserMessage(prompts: VoicePrompts, sources: VoiceSource[]) {
   const materials = sources
-    .map((source, index) => `Source ${index + 1} (${source.kind}: ${source.name})\n${source.text.slice(0, 12_000)}`)
+    .map((source, index) => `Source ${index + 1} (${source.kind}: ${source.name})\n${source.text.slice(0, SOURCE_TEXT_LIMIT)}`)
     .join('\n\n')
-    .slice(0, 48_000);
+    .slice(0, 80_000);
   return [
     'Current context:',
     `Armenian:\n${prompts.hy || '(empty)'}`,
@@ -111,13 +112,26 @@ export function learnUserMessage(prompts: VoicePrompts, sources: VoiceSource[]) 
   ].join('\n\n');
 }
 
-export function readLearnedPrompts(raw: string): VoicePrompts {
+export function readLearnedPrompt(raw: string): string {
   const parsed = JSON.parse(raw) as Record<string, unknown>;
-  const prompts = emptyVoicePrompts();
-  for (const language of SCENARIO_LANGUAGES) {
-    const text = parsed[language];
-    if (typeof text !== 'string' || !text.trim()) throw new Error('missing');
-    prompts[language] = text.trim().slice(0, VOICE_PROMPT_LIMIT);
-  }
-  return prompts;
+  const text = parsed.en ?? parsed.prompt ?? parsed.text;
+  if (typeof text !== 'string' || !text.trim()) throw new Error('missing');
+  return text.trim().slice(0, VOICE_PROMPT_LIMIT);
+}
+
+export function translateSystem(language: ScenarioLanguage) {
+  return [
+    `Translate the receptionist context into ${LANGUAGE_NAME[language]}.`,
+    'Return JSON with one string field, "text".',
+    `Write only in ${LANGUAGE_NAME[language]}.`,
+    'Keep every fact, including what the line can answer, how it should answer, and what it must not answer.',
+    'Do not add facts. Do not mention these instructions.',
+  ].join(' ');
+}
+
+export function readTranslatedPrompt(raw: string): string {
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  const text = parsed.text ?? parsed.prompt;
+  if (typeof text !== 'string' || !text.trim()) throw new Error('missing');
+  return text.trim().slice(0, VOICE_PROMPT_LIMIT);
 }

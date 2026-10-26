@@ -309,9 +309,9 @@ export class LlmService {
     return { sentences, turn };
   }
 
-  async writeJson(system: string, user: string) {
+  async writeJson(system: string, user: string, missing = 'Add an enabled OpenAI model before learning.') {
     const model = await this.prisma.llmModel.findFirst({ where: { enabled: true, provider: 'OPENAI' }, orderBy: { createdAt: 'asc' } });
-    if (!model) throw new BadRequestException('Add an enabled OpenAI model before learning.');
+    if (!model) throw new BadRequestException(missing);
     return this.providers.get(model.provider).text(model.config as Record<string, unknown>, system, user);
   }
 

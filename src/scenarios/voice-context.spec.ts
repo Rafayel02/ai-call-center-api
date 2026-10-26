@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { learnUserMessage, pageText, readLearnedPrompts, readVoicePrompts, readVoiceSources } from './voice-context';
+import { learnUserMessage, pageText, readLearnedPrompt, readTranslatedPrompt, readVoicePrompts, readVoiceSources } from './voice-context';
 import { isPrivateAddress } from './voice-sources';
 
 test('a private address cannot be used as a context link', () => {
@@ -23,7 +23,7 @@ test('a page keeps its words and drops the markup', () => {
   assert.equal(pageText('<html><style>a{}</style><p>Open &amp; welcome</p><script>no</script></html>'), 'Open & welcome');
 });
 
-test('learning reads every source and returns a prompt for each language', () => {
+test('learning reads every source and keeps the English prompt', () => {
   const message = learnUserMessage(
     { hy: 'Հին', en: '', ru: '' },
     [{ id: '1', kind: 'file', name: 'hours.txt', url: null, text: '9 to 6', createdAt: '2026-10-26T00:00:00.000Z' }],
@@ -31,10 +31,11 @@ test('learning reads every source and returns a prompt for each language', () =>
   assert.match(message, /Հին/);
   assert.match(message, /hours.txt/);
   assert.match(message, /9 to 6/);
-  const learned = readLearnedPrompts('{"hy":"Հայ","en":"English","ru":"Русский"}');
-  assert.equal(learned.hy, 'Հայ');
-  assert.equal(learned.ru, 'Русский');
-  assert.throws(() => readLearnedPrompts('{"hy":"Հայ"}'));
+  assert.equal(readLearnedPrompt('{"en":" Open 9 to 6. "}'), 'Open 9 to 6.');
+  assert.equal(readLearnedPrompt('{"prompt":"Hours"}'), 'Hours');
+  assert.throws(() => readLearnedPrompt('{"hy":"Հայ"}'));
+  assert.equal(readTranslatedPrompt('{"text":" Բաց ենք 9-ից 6-ը։ "}'), 'Բաց ենք 9-ից 6-ը։');
+  assert.throws(() => readTranslatedPrompt('{}'));
 });
 
 test('a stored source keeps its text and drops a broken row', () => {

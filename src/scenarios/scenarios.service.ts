@@ -8,7 +8,7 @@ import { SaveScenarioGraphDto } from './dto/save-scenario-graph.dto';
 import { emptyScenarioGraph, parseScenarioGraph, readScenarioGraph } from './scenario-graph';
 import { LANGUAGE_NAME, ScenarioLanguage, applyTranslations, clearGraphModels, detectScript, emptyVoice, isScenarioLanguage, languageModelsFor, modelsOnGraph, spokenSample, spokenSlots, stampLanguage } from './scenario-languages';
 import { readVoiceMode, readVoicePrompt } from '../telephony/realtime-brief';
-import { LEARN_SYSTEM, SOURCE_LIMIT, SOURCE_TEXT_LIMIT, VoiceSource, learnUserMessage, publicVoiceSource, readLearnedPrompts, readVoicePrompts, readVoiceSources } from './voice-context';
+import { LEARN_SYSTEM, SOURCE_LIMIT, SOURCE_TEXT_LIMIT, VoiceSource, learnUserMessage, publicVoiceSource, readLearnedPrompt, readTranslatedPrompt, readVoicePrompts, readVoiceSources, translateSystem } from './voice-context';
 import { textFromLink, textFromUpload } from './voice-sources';
 import { readRealtimeModel } from '../telephony/realtime-models';
 
@@ -247,17 +247,42 @@ export class ScenariosService implements OnModuleInit {
     if (sources.length === 0) throw new BadRequestException('Add a file or a link before learning.');
     const prompts = readVoicePrompts(current && typeof current === 'object' ? current : scenario.voicePrompts, scenario.voicePrompt);
     const raw = await this.llm.writeJson(LEARN_SYSTEM, learnUserMessage(prompts, sources));
-    let learned;
+    let english: string;
     try {
-      learned = readLearnedPrompts(raw);
+      english = readLearnedPrompt(raw);
     } catch {
-      throw new BadRequestException('Learning did not return a prompt for every language.');
+      throw new BadRequestException('Learning did not return an English prompt.');
     }
+    const next = { ...prompts, en: english };
     await this.prisma.scenario.update({
       where: { id },
-      data: { voicePrompts: learned as unknown as Prisma.InputJsonValue, voicePrompt: learned.hy },
+      data: { voicePrompts: next as unknown as Prisma.InputJsonValue, voicePrompt: next.hy },
     });
-    return { voicePrompts: learned, voiceSources: sources.map(publicVoiceSource) };
+    return { voicePrompts: next, voiceSources: sources.map(publicVoiceSource) };
+  }
+
+  async translateContext(id: string, current: unknown) {
+    const scenario = await this.prisma.scenario.findUnique({ where: { id }, select: { voicePrompt: true, voicePrompts: true, voiceSources: true } });
+    if (!scenario) throw new NotFoundException('Scenario not found.');
+    const prompts = readVoicePrompts(current && typeof current === 'object' ? current : scenario.voicePrompts, scenario.voicePrompt);
+    if (!prompts.en.trim()) throw new BadRequestException('Write the English prompt before translating.');
+    const sources = readVoiceSources(scenario.voiceSources);
+    const [hy, ru] = await Promise.all([this.translatePrompt(prompts.en, 'hy'), this.translatePrompt(prompts.en, 'ru')]);
+    const next = { ...prompts, hy, ru };
+    await this.prisma.scenario.update({
+      where: { id },
+      data: { voicePrompts: next as unknown as Prisma.InputJsonValue, voicePrompt: next.hy },
+    });
+    return { voicePrompts: next, voiceSources: sources.map(publicVoiceSource) };
+  }
+
+  private async translatePrompt(english: string, language: 'hy' | 'ru') {
+    const raw = await this.llm.writeJson(translateSystem(language), english, 'Add an enabled OpenAI model before translating.');
+    try {
+      return readTranslatedPrompt(raw);
+    } catch {
+      throw new BadRequestException(`Translation did not return the ${LANGUAGE_NAME[language]} prompt.`);
+    }
   }
 
   private async linkSource(url: string): Promise<VoiceSource> {
