@@ -314,7 +314,7 @@ export class OpenAiProvider implements LlmProviderClient {
         body: JSON.stringify({
           model: stored.modelId,
           temperature: 0,
-          max_completion_tokens: 8000,
+          max_completion_tokens: 16000,
           messages: [
             { role: 'system', content: system },
             { role: 'user', content: user },

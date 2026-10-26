@@ -33,4 +33,8 @@ export class SaveScenarioGraphDto {
   @IsString()
   @MaxLength(VOICE_PROMPT_LIMIT)
   voicePrompt?: string;
+
+  @IsOptional()
+  @IsObject()
+  voicePrompts?: Record<string, unknown>;
 }

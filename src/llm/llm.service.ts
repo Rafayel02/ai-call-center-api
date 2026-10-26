@@ -309,6 +309,12 @@ export class LlmService {
     return { sentences, turn };
   }
 
+  async writeJson(system: string, user: string) {
+    const model = await this.prisma.llmModel.findFirst({ where: { enabled: true, provider: 'OPENAI' }, orderBy: { createdAt: 'asc' } });
+    if (!model) throw new BadRequestException('Add an enabled OpenAI model before learning.');
+    return this.providers.get(model.provider).text(model.config as Record<string, unknown>, system, user);
+  }
+
   async translateLines(lines: string[], targetName: string) {
     const pending = lines.map((line, index) => (line.trim() ? index : -1)).filter((index) => index >= 0);
     if (pending.length === 0) return lines.map(() => '');

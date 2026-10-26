@@ -17,6 +17,7 @@ import { CallDeps, PhoneScenarioSession } from './call-session';
 import { GeminiRealtime } from './gemini-realtime';
 import { OpenAiRealtime } from './openai-realtime';
 import { briefFromParts, promptBrief, readVoiceMode, readVoicePrompt, realtimeBrief, VoiceMode } from './realtime-brief';
+import { VoicePrompts, readVoicePrompts, voicePromptFor } from '../scenarios/voice-context';
 import { isGeminiLiveModel, readRealtimeModel } from './realtime-models';
 import { isTwilioSignature } from './twilio-signature';
 import { ScenarioLanguage, ScenarioLanguageModels, isScenarioLanguage, languageKeyLine, languageModelsFor } from '../scenarios/scenario-languages';
@@ -47,6 +48,7 @@ interface PendingCall {
   realtimeModel: string;
   voiceMode: VoiceMode;
   voicePrompt: string;
+  voicePrompts: VoicePrompts;
   expires: number;
 }
 
@@ -297,7 +299,7 @@ export class TelephonyService {
 
   private speakLive(socket: WebSocket, session: PhoneScenarioSession, pending: PendingCall, log: CallLog, apiKey: string) {
     const language = pending.chosenLanguage ?? pending.languages[0] ?? 'en';
-    const brief = pending.voiceMode === 'prompt' ? promptBrief(language, pending.voicePrompt) : realtimeBrief(pending.graph, language);
+    const brief = pending.voiceMode === 'prompt' ? promptBrief(language, voicePromptFor(pending.voicePrompts, language)) : realtimeBrief(pending.graph, language);
     let ready = false;
     const realtime = this.liveSession(apiKey, pending.realtimeModel, 'pcmu', brief, {
       onReady: () => {
@@ -379,6 +381,7 @@ export class TelephonyService {
       realtimeModel: scenario.realtimeModel,
       voiceMode: scenario.voiceMode,
       voicePrompt: scenario.voicePrompt,
+      voicePrompts: scenario.voicePrompts,
       expires: Date.now() + 60_000,
     };
     if (log) {
@@ -463,7 +466,7 @@ export class TelephonyService {
   private async publishedScenario(to: string) {
     const number = await this.prisma.phoneNumber.findUnique({
       where: { e164: to },
-      select: { scenario: { select: { id: true, active: true, graph: true, languages: true, languageModels: true, askLanguage: true, realtimeModel: true, voiceMode: true, voicePrompt: true, createdById: true } } },
+      select: { scenario: { select: { id: true, active: true, graph: true, languages: true, languageModels: true, askLanguage: true, realtimeModel: true, voiceMode: true, voicePrompt: true, voicePrompts: true, createdById: true } } },
     });
     if (!number?.scenario?.active) return null;
     const languages = number.scenario.languages.filter(isScenarioLanguage);
@@ -476,6 +479,7 @@ export class TelephonyService {
       realtimeModel: readRealtimeModel(number.scenario.realtimeModel),
       voiceMode: readVoiceMode(number.scenario.voiceMode),
       voicePrompt: readVoicePrompt(number.scenario.voicePrompt),
+      voicePrompts: readVoicePrompts(number.scenario.voicePrompts, number.scenario.voicePrompt),
       graph: readScenarioGraph(number.scenario.graph),
     };
   }

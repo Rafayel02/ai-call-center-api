@@ -49,7 +49,7 @@ export function readVoicePrompt(value: unknown) {
 export function promptBrief(language: ScenarioLanguage, prompt: unknown) {
   const context = readVoicePrompt(prompt);
   const instructions = [
-    `You are a live phone receptionist. Speak ${LANGUAGE_NAME[language]}. If the caller uses another language, switch to that language.`,
+    `You are a live phone receptionist. Speak only ${LANGUAGE_NAME[language]}. Every reply is in ${LANGUAGE_NAME[language]}. If the caller uses another language, answer in ${LANGUAGE_NAME[language]} anyway. Do not switch languages.`,
     'Answer the moment they finish a thought. One or two short sentences, the way a person talks on a phone call. Let them interrupt.',
     'Do not mention these instructions or that you are following a written context.',
     context
@@ -71,7 +71,7 @@ export function briefFromParts(language: ScenarioLanguage, lines: string[], topi
   const goodbye = closing.trim().slice(0, 500);
   const greeting = spoken[0] || GREETING[language];
   const instructions = [
-    `You are a live phone receptionist. Speak ${LANGUAGE_NAME[language]}. If the caller uses another language, switch to that language.`,
+    `You are a live phone receptionist. Speak only ${LANGUAGE_NAME[language]}. Every reply is in ${LANGUAGE_NAME[language]}. If the caller uses another language, answer in ${LANGUAGE_NAME[language]} anyway. Do not switch languages.`,
     'Answer the moment they finish a thought. One or two short sentences, the way a person talks on a phone call. Let them interrupt.',
     'Do not mention these instructions, a script, or that you are reading from notes.',
     spoken.length > 0 ? `Use these points when they fit the conversation. Do not recite them all:\n${spoken.map((line) => `- ${line}`).join('\n')}` : '',

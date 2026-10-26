@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { readVoiceMode, readVoicePrompt } from '../telephony/realtime-brief';
+import { readVoicePrompts } from '../scenarios/voice-context';
 import { readRealtimeModel } from '../telephony/realtime-models';
 import { DEMO_LANGUAGES, DemoLanguage, SaveDemoProfileDto, StartDemoSessionDto } from './dto/save-demo-profile.dto';
 import { ProfileCopy, TEAM_PROFILE } from './team-profile';
@@ -19,7 +20,7 @@ const profileSelect = {
   copy: true,
   createdAt: true,
   updatedAt: true,
-  scenario: { select: { id: true, name: true, languages: true, languageModels: true, realtimeModel: true, voiceMode: true, voicePrompt: true } },
+  scenario: { select: { id: true, name: true, languages: true, languageModels: true, realtimeModel: true, voiceMode: true, voicePrompt: true, voicePrompts: true } },
 } satisfies Prisma.DemoProfileSelect;
 
 type ProfileRow = Prisma.DemoProfileGetPayload<{ select: typeof profileSelect }>;
@@ -148,6 +149,7 @@ export class DemoProfilesService implements OnModuleInit {
       realtimeModel: readRealtimeModel(scenario.realtimeModel),
       voiceMode: readVoiceMode(scenario.voiceMode),
       voicePrompt: readVoicePrompt(scenario.voicePrompt),
+      voicePrompts: readVoicePrompts(scenario.voicePrompts, scenario.voicePrompt),
       models,
     };
   }

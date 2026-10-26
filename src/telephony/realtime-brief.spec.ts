@@ -34,6 +34,9 @@ test('a context prompt is the only source the call may use', () => {
   assert.match(brief.instructions, /We are open from 9 to 6/);
   assert.match(brief.instructions, /only information you may use/);
   assert.match(brief.instructions, /Do not answer the out-of-scope question/);
+  assert.match(brief.instructions, /Speak only Armenian/);
+  assert.match(brief.instructions, /Do not switch languages/);
+  assert.doesNotMatch(brief.instructions, /switch to that language/);
   assert.equal(brief.greeting, 'Բարև, ինչով կարող եմ օգնել:');
   assert.match(promptBrief('en', '   ').instructions, /no context yet/);
   assert.equal(readVoiceMode('prompt'), 'prompt');

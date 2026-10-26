@@ -1,7 +1,8 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AuthUser, CurrentUser } from '../common/decorators/current-user.decorator';
 import { AddScenarioLanguageDto } from './dto/add-scenario-language.dto';
+import { AddContextSourceDto, LearnContextDto } from './dto/context-source.dto';
 import { CreateScenarioDto } from './dto/create-scenario.dto';
 import { SaveScenarioGraphDto } from './dto/save-scenario-graph.dto';
 import { AttachPhoneNumberDto } from './dto/attach-phone-number.dto';
@@ -46,5 +47,20 @@ export class ScenariosController {
   @Patch(':id')
   saveGraph(@Param('id', ParseUUIDPipe) id: string, @Body() dto: SaveScenarioGraphDto) {
     return this.scenarios.saveGraph(id, dto);
+  }
+
+  @Post(':id/context/sources')
+  addContextSource(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AddContextSourceDto) {
+    return this.scenarios.addContextSource(id, dto);
+  }
+
+  @Delete(':id/context/sources/:sourceId')
+  removeContextSource(@Param('id', ParseUUIDPipe) id: string, @Param('sourceId', ParseUUIDPipe) sourceId: string) {
+    return this.scenarios.removeContextSource(id, sourceId);
+  }
+
+  @Post(':id/context/learn')
+  learnContext(@Param('id', ParseUUIDPipe) id: string, @Body() dto: LearnContextDto) {
+    return this.scenarios.learnContext(id, dto.prompts);
   }
 }
