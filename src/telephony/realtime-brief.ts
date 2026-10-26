@@ -35,7 +35,7 @@ export function realtimeBrief(graph: ScenarioGraph, language: ScenarioLanguage) 
 
 export const VOICE_MODES = ['scenario', 'prompt'] as const;
 export type VoiceMode = (typeof VOICE_MODES)[number];
-export const VOICE_PROMPT_LIMIT = 8000;
+export const VOICE_PROMPT_LIMIT = 24_000;
 
 export function readVoiceMode(value: unknown): VoiceMode {
   return value === 'prompt' ? 'prompt' : 'scenario';

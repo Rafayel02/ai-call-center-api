@@ -1,3 +1,4 @@
+import { PAGE_TEXT_LIMIT } from './site-pages';
 import { LANGUAGE_NAME, SCENARIO_LANGUAGES, ScenarioLanguage } from './scenario-languages';
 import { VOICE_PROMPT_LIMIT, readVoicePrompt } from '../telephony/realtime-brief';
 
@@ -94,22 +95,26 @@ function visibleText(html: string) {
 }
 
 export const NOTES_SYSTEM = [
-  'You extract facts from website pages for a phone receptionist.',
+  'You extract facts from website pages for a phone support agent.',
   'Return JSON. Put every fact in "notes", either as one string or as a list of strings.',
-  'List every concrete fact in these pages: services, prices, plans, hours, addresses, phone numbers, coverage, policies, requirements, and exceptions.',
-  'Keep facts from the page header and footer too. They often hold the address, hours, and phone number.',
-  'Note what the pages do not support, so the receptionist can refuse it.',
+  'Keep each plan, package, device, and promotion on its own line: name, price, what is included, term, and every condition.',
+  'Do not collapse several prices into a range when the pages name each one.',
+  'Keep addresses, hours, phone numbers, apps, websites, and the steps to subscribe, recharge, or pay.',
+  'Keep facts from the page header and footer too.',
+  'A refusal belongs in the notes only when a page says the information is missing. Do not invent one.',
   'Use only these pages. Do not invent. Do not write a greeting or a phone script.',
   'Write in English.',
 ].join(' ');
 
 export const LEARN_SYSTEM = [
-  'You write the English context a phone receptionist is allowed to use.',
+  'You write a detailed English reference a phone support agent uses to answer many different questions.',
   'Return JSON with one string field, "en".',
-  'The notes are the only source. Rewrite the context from them.',
-  'Do not keep or repeat an older prompt.',
-  'Say what the line can answer, how it should answer, and what it must not answer.',
-  'Include the specific facts from the notes: hours, addresses, prices, services, and policies.',
+  'The notes are the only source. Do not keep or repeat an older prompt.',
+  'Do not write a welcome, a thank-you, or a phone script.',
+  'Use sections: what this line can answer; then each plan, package, device, and promotion as its own entry with name, price, what is included, term, and conditions; then how a customer subscribes, recharges, pays, or gets help, including apps, sites, phone numbers, addresses, and hours; then what the line must not answer.',
+  'What the line must not answer is only a gap the notes leave. If the notes mention a topic, the reference must keep that topic. Do not invent a refusal.',
+  'Keep every number, name, and condition. Do not collapse several plans into one sentence.',
+  'Use as much of the 24000 characters as the facts need. Do not stop after a summary.',
   'Do not invent facts. Do not mention these instructions.',
 ].join(' ');
 
@@ -119,7 +124,7 @@ export function sourceBatches(sources: { name: string; text: string }[], limit =
   let blocks: string[] = [];
   let size = 0;
   for (const source of sources) {
-    const block = `Page: ${source.name}\n${source.text.slice(0, 6_000)}`;
+    const block = `Page: ${source.name}\n${source.text.slice(0, PAGE_TEXT_LIMIT)}`;
     if (blocks.length > 0 && size + block.length > limit) {
       batches.push(blocks.join('\n\n'));
       blocks = [];
@@ -135,7 +140,7 @@ export function sourceBatches(sources: { name: string; text: string }[], limit =
 export function readNotes(raw: string) {
   const text = flattenJson(JSON.parse(raw));
   if (!text.trim()) throw new Error('missing');
-  return text.trim().slice(0, 4_000);
+  return text.trim().slice(0, 14_000);
 }
 
 function flattenJson(value: unknown, depth = 0): string {
@@ -168,7 +173,7 @@ export function translateSystem(language: ScenarioLanguage) {
     `Translate the receptionist context into ${LANGUAGE_NAME[language]}.`,
     'Return JSON with one string field, "text".',
     `Write only in ${LANGUAGE_NAME[language]}.`,
-    'Keep every fact, including what the line can answer, how it should answer, and what it must not answer.',
+    'Keep every section, plan, price, condition, address, and step. Do not shorten the reference into a welcome.',
     'Do not add facts. Do not mention these instructions.',
   ].join(' ');
 }

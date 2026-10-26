@@ -30,6 +30,8 @@ test('a page keeps its words and drops the markup', () => {
 
 test('learning rewrites the English prompt from page notes, in batches', () => {
   assert.match(LEARN_SYSTEM, /Do not keep or repeat an older prompt/);
+  assert.match(LEARN_SYSTEM, /own entry/);
+  assert.match(LEARN_SYSTEM, /Do not write a welcome/);
   assert.doesNotMatch(LEARN_SYSTEM, /Keep facts already/);
   const batches = sourceBatches(
     [

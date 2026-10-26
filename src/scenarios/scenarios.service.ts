@@ -254,7 +254,7 @@ export class ScenariosService implements OnModuleInit {
     const prompts = readVoicePrompts(current && typeof current === 'object' ? current : scenario.voicePrompts, scenario.voicePrompt);
     const notes = await this.notesFromSources(sources);
     if (!notes.trim()) throw new BadRequestException('Learning did not find facts in the sources.');
-    const raw = await this.llm.writeJson(LEARN_SYSTEM, `Facts gathered from the pages:\n\n${notes}`);
+    const raw = await this.llm.writeJson(LEARN_SYSTEM, `Write the full reference from these notes. Keep every plan, price, and condition on its own entry. Do not turn this into a short welcome.\n\n${notes}`);
     let english: string;
     try {
       english = readLearnedPrompt(raw);
@@ -336,13 +336,13 @@ export class ScenariosService implements OnModuleInit {
       }
     });
     const gathered = notes.filter(Boolean).join('\n\n').trim();
-    if (gathered) return gathered.slice(0, 32_000);
+    if (gathered) return gathered.slice(0, 60_000);
     const pages = sources
       .map((source) => source.text.trim())
       .filter((text) => text.length >= 30)
-      .map((text, index) => `Page ${index + 1}\n${text.slice(0, 6_000)}`)
+      .map((text, index) => `Page ${index + 1}\n${text.slice(0, 12_000)}`)
       .join('\n\n')
-      .slice(0, 32_000);
+      .slice(0, 60_000);
     if (!pages) throw new BadRequestException('Learning did not find facts in the sources.');
     return pages;
   }
