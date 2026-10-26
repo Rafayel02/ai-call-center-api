@@ -21,11 +21,11 @@ test('an older single prompt is kept as the Armenian context', () => {
 
 test('a page keeps its words and drops the markup', () => {
   assert.equal(pageText('<html><style>a{}</style><p>Open &amp; welcome</p><script>no</script></html>'), 'Open & welcome');
-  const hours = 'Open every day from 6 AM to 9 PM at Northern Avenue 1. '.repeat(3);
-  const text = pageText(`<html><nav>Plans Menu</nav><main><p>${hours}</p></main><footer>Copyright</footer></html>`);
+  const hours = 'Open every day from 6 AM to 9 PM. '.repeat(3);
+  const text = pageText(`<html><nav>Plans Menu</nav><main><p>${hours}</p></main><footer>Northern Avenue 1</footer></html>`);
   assert.match(text, /Northern Avenue 1/);
+  assert.match(text, /6 AM to 9 PM/);
   assert.doesNotMatch(text, /Plans Menu/);
-  assert.doesNotMatch(text, /Copyright/);
 });
 
 test('learning rewrites the English prompt from page notes, in batches', () => {
@@ -41,6 +41,8 @@ test('learning rewrites the English prompt from page notes, in batches', () => {
   assert.equal(batches.length, 2);
   assert.match(batches[0], /Page: hours/);
   assert.equal(readNotes('{"notes":" Open 9 to 6. "}'), 'Open 9 to 6.');
+  assert.equal(readNotes('{"notes":["Open 9 to 6","Northern Avenue 1"]}'), 'Open 9 to 6\nNorthern Avenue 1');
+  assert.match(readNotes('{"facts":{"hours":"9 to 6","address":"Northern Avenue 1"}}'), /Northern Avenue 1/);
   assert.equal(readLearnedPrompt('{"en":" Open 9 to 6. "}'), 'Open 9 to 6.');
   assert.equal(readLearnedPrompt('{"prompt":"Hours"}'), 'Hours');
   assert.throws(() => readLearnedPrompt('{"hy":"Հայ"}'));

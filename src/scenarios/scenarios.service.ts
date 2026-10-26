@@ -305,7 +305,8 @@ export class ScenariosService implements OnModuleInit {
           const identity = pageIdentity(page.url);
           const index = next.findIndex((source) => source.url && pageIdentity(source.url) === identity);
           if (index >= 0) {
-            next[index] = { ...next[index], name: page.name, url: page.url, text: page.text };
+            const previous = next[index];
+            next[index] = { ...previous, name: page.name, url: page.url, text: page.text.length + 200 < previous.text.length ? previous.text : page.text };
             continue;
           }
           if (next.length >= SOURCE_LIMIT) break;
@@ -324,14 +325,26 @@ export class ScenariosService implements OnModuleInit {
   private async notesFromSources(sources: VoiceSource[]) {
     const batches = sourceBatches(sources);
     const notes = await mapPool(batches, 3, async (batch) => {
+      let raw = '';
       try {
-        return readNotes(await this.llm.writeJson(NOTES_SYSTEM, batch));
+        raw = await this.llm.writeJson(NOTES_SYSTEM, batch);
+        return readNotes(raw);
       } catch (error) {
         if (error instanceof BadRequestException) throw error;
+        this.logger.warn(`Context notes were not readable: ${raw.slice(0, 300)}`);
         return '';
       }
     });
-    return notes.filter(Boolean).join('\n\n').slice(0, 32_000);
+    const gathered = notes.filter(Boolean).join('\n\n').trim();
+    if (gathered) return gathered.slice(0, 32_000);
+    const pages = sources
+      .map((source) => source.text.trim())
+      .filter((text) => text.length >= 30)
+      .map((text, index) => `Page ${index + 1}\n${text.slice(0, 6_000)}`)
+      .join('\n\n')
+      .slice(0, 32_000);
+    if (!pages) throw new BadRequestException('Learning did not find facts in the sources.');
+    return pages;
   }
 
   private async translatePrompt(english: string, language: 'hy' | 'ru') {

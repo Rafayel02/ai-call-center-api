@@ -74,13 +74,8 @@ export function pageText(html: string) {
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
-    .replace(/<header[\s\S]*?<\/header>/gi, ' ')
-    .replace(/<nav[\s\S]*?<\/nav>/gi, ' ')
-    .replace(/<footer[\s\S]*?<\/footer>/gi, ' ')
-    .replace(/<aside[\s\S]*?<\/aside>/gi, ' ');
-  const main = withoutChrome.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i)?.[1] ?? withoutChrome.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i)?.[1];
-  const mainText = main ? visibleText(main) : '';
-  return mainText.length >= 80 ? mainText : visibleText(withoutChrome);
+    .replace(/<nav[\s\S]*?<\/nav>/gi, ' ');
+  return visibleText(withoutChrome);
 }
 
 function visibleText(html: string) {
@@ -100,8 +95,9 @@ function visibleText(html: string) {
 
 export const NOTES_SYSTEM = [
   'You extract facts from website pages for a phone receptionist.',
-  'Return JSON with one string field, "notes".',
+  'Return JSON. Put every fact in "notes", either as one string or as a list of strings.',
   'List every concrete fact in these pages: services, prices, plans, hours, addresses, phone numbers, coverage, policies, requirements, and exceptions.',
+  'Keep facts from the page header and footer too. They often hold the address, hours, and phone number.',
   'Note what the pages do not support, so the receptionist can refuse it.',
   'Use only these pages. Do not invent. Do not write a greeting or a phone script.',
   'Write in English.',
@@ -137,10 +133,27 @@ export function sourceBatches(sources: { name: string; text: string }[], limit =
 }
 
 export function readNotes(raw: string) {
-  const parsed = JSON.parse(raw) as Record<string, unknown>;
-  const text = parsed.notes ?? parsed.text;
-  if (typeof text !== 'string' || !text.trim()) throw new Error('missing');
+  const text = flattenJson(JSON.parse(raw));
+  if (!text.trim()) throw new Error('missing');
   return text.trim().slice(0, 4_000);
+}
+
+function flattenJson(value: unknown, depth = 0): string {
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.map((item) => flattenJson(item, depth + 1)).filter(Boolean).join('\n');
+  if (!value || typeof value !== 'object' || depth > 4) return '';
+  const entries = Object.entries(value as Record<string, unknown>);
+  return entries
+    .map(([key, item]) => {
+      const text = flattenJson(item, depth + 1);
+      if (!text) return '';
+      if (typeof item === 'string' && depth === 0 && entries.length === 1) return text;
+      if (Array.isArray(item) && item.every((entry) => typeof entry === 'string')) return text;
+      return `${key}: ${text}`;
+    })
+    .filter(Boolean)
+    .join('\n');
 }
 
 export function readLearnedPrompt(raw: string): string {
