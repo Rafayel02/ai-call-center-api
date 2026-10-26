@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { learnUserMessage, pageText, readLearnedPrompt, readTranslatedPrompt, readVoicePrompts, readVoiceSources } from './voice-context';
+import { LEARN_SYSTEM, pageText, readLearnedPrompt, readNotes, readTranslatedPrompt, readVoicePrompts, readVoiceSources, sourceBatches } from './voice-context';
 import { isPrivateAddress } from './voice-sources';
 
 test('a private address cannot be used as a context link', () => {
@@ -21,16 +21,26 @@ test('an older single prompt is kept as the Armenian context', () => {
 
 test('a page keeps its words and drops the markup', () => {
   assert.equal(pageText('<html><style>a{}</style><p>Open &amp; welcome</p><script>no</script></html>'), 'Open & welcome');
+  const hours = 'Open every day from 6 AM to 9 PM at Northern Avenue 1. '.repeat(3);
+  const text = pageText(`<html><nav>Plans Menu</nav><main><p>${hours}</p></main><footer>Copyright</footer></html>`);
+  assert.match(text, /Northern Avenue 1/);
+  assert.doesNotMatch(text, /Plans Menu/);
+  assert.doesNotMatch(text, /Copyright/);
 });
 
-test('learning reads every source and keeps the English prompt', () => {
-  const message = learnUserMessage(
-    { hy: 'Հին', en: '', ru: '' },
-    [{ id: '1', kind: 'file', name: 'hours.txt', url: null, text: '9 to 6', createdAt: '2026-10-26T00:00:00.000Z' }],
+test('learning rewrites the English prompt from page notes, in batches', () => {
+  assert.match(LEARN_SYSTEM, /Do not keep or repeat an older prompt/);
+  assert.doesNotMatch(LEARN_SYSTEM, /Keep facts already/);
+  const batches = sourceBatches(
+    [
+      { name: 'hours', text: 'x'.repeat(10_000) },
+      { name: 'plans', text: 'y'.repeat(10_000) },
+    ],
+    6_000,
   );
-  assert.match(message, /Հին/);
-  assert.match(message, /hours.txt/);
-  assert.match(message, /9 to 6/);
+  assert.equal(batches.length, 2);
+  assert.match(batches[0], /Page: hours/);
+  assert.equal(readNotes('{"notes":" Open 9 to 6. "}'), 'Open 9 to 6.');
   assert.equal(readLearnedPrompt('{"en":" Open 9 to 6. "}'), 'Open 9 to 6.');
   assert.equal(readLearnedPrompt('{"prompt":"Hours"}'), 'Hours');
   assert.throws(() => readLearnedPrompt('{"hy":"Հայ"}'));

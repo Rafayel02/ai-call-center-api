@@ -8,8 +8,9 @@ import { SaveScenarioGraphDto } from './dto/save-scenario-graph.dto';
 import { emptyScenarioGraph, parseScenarioGraph, readScenarioGraph } from './scenario-graph';
 import { LANGUAGE_NAME, ScenarioLanguage, applyTranslations, clearGraphModels, detectScript, emptyVoice, isScenarioLanguage, languageModelsFor, modelsOnGraph, spokenSample, spokenSlots, stampLanguage } from './scenario-languages';
 import { readVoiceMode, readVoicePrompt } from '../telephony/realtime-brief';
-import { LEARN_SYSTEM, SOURCE_LIMIT, SOURCE_TEXT_LIMIT, VoiceSource, learnUserMessage, publicVoiceSource, readLearnedPrompt, readTranslatedPrompt, readVoicePrompts, readVoiceSources, translateSystem } from './voice-context';
-import { textFromLink, textFromUpload } from './voice-sources';
+import { LEARN_SYSTEM, NOTES_SYSTEM, SOURCE_LIMIT, SOURCE_TEXT_LIMIT, VoiceSource, publicVoiceSource, readLearnedPrompt, readNotes, readTranslatedPrompt, readVoicePrompts, readVoiceSources, sourceBatches, translateSystem } from './voice-context';
+import { PAGE_TEXT_LIMIT, THIN_SITE_PAGES, pageIdentity, siteHost } from './site-pages';
+import { CrawledPage, crawlSite, textFromUpload } from './voice-sources';
 import { readRealtimeModel } from '../telephony/realtime-models';
 
 const scenarioSummary = {
@@ -218,16 +219,20 @@ export class ScenariosService implements OnModuleInit {
     const scenario = await this.prisma.scenario.findUnique({ where: { id }, select: { voiceSources: true } });
     if (!scenario) throw new NotFoundException('Scenario not found.');
     const sources = readVoiceSources(scenario.voiceSources);
-    if (sources.length >= SOURCE_LIMIT) throw new BadRequestException('This context already has 20 sources.');
-    const source = input.url?.trim()
-      ? await this.linkSource(input.url.trim())
-      : input.data && input.name?.trim()
-        ? await this.fileSource(input.name.trim(), input.data)
-        : null;
+    if (sources.length >= SOURCE_LIMIT) throw new BadRequestException(`This context already has ${SOURCE_LIMIT} sources.`);
+    if (input.url?.trim()) {
+      const pages = await crawlSite(input.url.trim());
+      const accepted = unseenPages(sources, pages).slice(0, SOURCE_LIMIT - sources.length);
+      if (accepted.length === 0) throw new BadRequestException('Those pages are already in this context.');
+      const next = [...sources, ...accepted];
+      await this.prisma.scenario.update({ where: { id }, data: { voiceSources: next as unknown as Prisma.InputJsonValue } });
+      return { voiceSources: next.map(publicVoiceSource), added: accepted.length };
+    }
+    const source = input.data && input.name?.trim() ? await this.fileSource(input.name.trim(), input.data) : null;
     if (!source) throw new BadRequestException('Add a link or a file.');
     const next = [...sources, source];
     await this.prisma.scenario.update({ where: { id }, data: { voiceSources: next as unknown as Prisma.InputJsonValue } });
-    return { voiceSources: next.map(publicVoiceSource) };
+    return { voiceSources: next.map(publicVoiceSource), added: 1 };
   }
 
   async removeContextSource(id: string, sourceId: string) {
@@ -243,10 +248,13 @@ export class ScenariosService implements OnModuleInit {
   async learnContext(id: string, current: unknown) {
     const scenario = await this.prisma.scenario.findUnique({ where: { id }, select: { voicePrompt: true, voicePrompts: true, voiceSources: true } });
     if (!scenario) throw new NotFoundException('Scenario not found.');
-    const sources = readVoiceSources(scenario.voiceSources);
+    let sources = readVoiceSources(scenario.voiceSources);
     if (sources.length === 0) throw new BadRequestException('Add a file or a link before learning.');
+    sources = await this.expandThinSites(id, sources);
     const prompts = readVoicePrompts(current && typeof current === 'object' ? current : scenario.voicePrompts, scenario.voicePrompt);
-    const raw = await this.llm.writeJson(LEARN_SYSTEM, learnUserMessage(prompts, sources));
+    const notes = await this.notesFromSources(sources);
+    if (!notes.trim()) throw new BadRequestException('Learning did not find facts in the sources.');
+    const raw = await this.llm.writeJson(LEARN_SYSTEM, `Facts gathered from the pages:\n\n${notes}`);
     let english: string;
     try {
       english = readLearnedPrompt(raw);
@@ -276,6 +284,56 @@ export class ScenariosService implements OnModuleInit {
     return { voicePrompts: next, voiceSources: sources.map(publicVoiceSource) };
   }
 
+  private async expandThinSites(id: string, sources: VoiceSource[]) {
+    const hosts = new Map<string, VoiceSource[]>();
+    for (const source of sources) {
+      if (source.kind !== 'link' || !source.url) continue;
+      const host = siteHost(source.url);
+      if (!host) continue;
+      const list = hosts.get(host) ?? [];
+      list.push(source);
+      hosts.set(host, list);
+    }
+    let next = sources.slice();
+    for (const pages of hosts.values()) {
+      if (pages.length >= THIN_SITE_PAGES) continue;
+      const seed = pages.slice().sort((left, right) => (left.url?.length ?? 0) - (right.url?.length ?? 0))[0];
+      if (!seed.url) continue;
+      try {
+        const crawled = await crawlSite(seed.url);
+        for (const page of crawled) {
+          const identity = pageIdentity(page.url);
+          const index = next.findIndex((source) => source.url && pageIdentity(source.url) === identity);
+          if (index >= 0) {
+            next[index] = { ...next[index], name: page.name, url: page.url, text: page.text };
+            continue;
+          }
+          if (next.length >= SOURCE_LIMIT) break;
+          next.push({ id: randomUUID(), kind: 'link', name: page.name, url: page.url, text: page.text, createdAt: new Date().toISOString() });
+        }
+      } catch (error) {
+        this.logger.warn(`Context site was not read: ${error instanceof Error ? error.message : 'unknown'}`);
+      }
+    }
+    if (sourceMark(next) !== sourceMark(sources)) {
+      await this.prisma.scenario.update({ where: { id }, data: { voiceSources: next as unknown as Prisma.InputJsonValue } });
+    }
+    return next;
+  }
+
+  private async notesFromSources(sources: VoiceSource[]) {
+    const batches = sourceBatches(sources);
+    const notes = await mapPool(batches, 3, async (batch) => {
+      try {
+        return readNotes(await this.llm.writeJson(NOTES_SYSTEM, batch));
+      } catch (error) {
+        if (error instanceof BadRequestException) throw error;
+        return '';
+      }
+    });
+    return notes.filter(Boolean).join('\n\n').slice(0, 32_000);
+  }
+
   private async translatePrompt(english: string, language: 'hy' | 'ru') {
     const raw = await this.llm.writeJson(translateSystem(language), english, 'Add an enabled OpenAI model before translating.');
     try {
@@ -285,25 +343,41 @@ export class ScenariosService implements OnModuleInit {
     }
   }
 
-  private async linkSource(url: string): Promise<VoiceSource> {
-    const text = (await textFromLink(url)).slice(0, SOURCE_TEXT_LIMIT);
-    return { id: randomUUID(), kind: 'link', name: linkName(url), url: url.slice(0, 2000), text, createdAt: new Date().toISOString() };
-  }
-
   private async fileSource(name: string, data: string): Promise<VoiceSource> {
     const text = (await textFromUpload(name, Buffer.from(data, 'base64'))).slice(0, SOURCE_TEXT_LIMIT);
     return { id: randomUUID(), kind: 'file', name: name.slice(0, 200), url: null, text, createdAt: new Date().toISOString() };
   }
 }
 
-function linkName(raw: string) {
-  try {
-    const url = new URL(raw);
-    const path = url.pathname === '/' ? '' : url.pathname;
-    return `${url.hostname}${path}`.slice(0, 200);
-  } catch {
-    return raw.slice(0, 200);
+function unseenPages(sources: VoiceSource[], pages: CrawledPage[]): VoiceSource[] {
+  const seen = new Set(sources.map((source) => (source.url ? pageIdentity(source.url) : null)).filter((identity): identity is string => Boolean(identity)));
+  const now = new Date().toISOString();
+  const fresh: VoiceSource[] = [];
+  for (const page of pages) {
+    const identity = pageIdentity(page.url);
+    if (!identity || seen.has(identity)) continue;
+    seen.add(identity);
+    fresh.push({ id: randomUUID(), kind: 'link', name: page.name, url: page.url.slice(0, 2000), text: page.text.slice(0, PAGE_TEXT_LIMIT), createdAt: now });
   }
+  return fresh;
+}
+
+function sourceMark(sources: VoiceSource[]) {
+  return sources.map((source) => `${source.url ?? source.id}\n${source.text}`).join('\n');
+}
+
+async function mapPool<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>) {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  async function run() {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(items[index]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => run()));
+  return results;
 }
 
 function presentScenario<T extends { languages: string[]; languageModels: Prisma.JsonValue; graph: Prisma.JsonValue; realtimeModel: string; voiceMode: string; voicePrompt: string; voicePrompts: Prisma.JsonValue; voiceSources: Prisma.JsonValue }>(scenario: T) {

@@ -2,6 +2,7 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { BadRequestException } from '@nestjs/common';
 import { extractText } from 'unpdf';
+import { PAGE_TEXT_LIMIT, SITE_PAGE_LIMIT, cleanPageUrl, pageIdentity, pageLinks, pageName, robotsSitemaps, sameSite, sitemapLocs } from './site-pages';
 import { pageText } from './voice-context';
 
 const FILE_LIMIT = 1_000_000;
@@ -53,7 +54,110 @@ export async function textFromUpload(name: string, bytes: Buffer) {
   return requireText(text);
 }
 
+export interface CrawledPage {
+  url: string;
+  name: string;
+  text: string;
+}
+
 export async function textFromLink(raw: string) {
+  const document = await fetchDocument(raw);
+  return requireText(document.html ? pageText(document.body) : document.body);
+}
+
+/** Read the page that was pasted, then the same site's sitemap and linked HTML pages. */
+export async function crawlSite(seedRaw: string): Promise<CrawledPage[]> {
+  const first = await fetchDocument(seedRaw);
+  const site = new URL(first.url);
+  const pages: CrawledPage[] = [];
+  const seen = new Set<string>();
+  const keep = (url: string, body: string, html: boolean) => {
+    const identity = pageIdentity(url);
+    if (!identity || seen.has(identity)) return;
+    seen.add(identity);
+    const text = (html ? pageText(body) : body).replace(/\s+/g, ' ').trim().slice(0, PAGE_TEXT_LIMIT);
+    if (text.length < 30) return;
+    pages.push({ url, name: pageName(url), text });
+  };
+  keep(first.url, first.body, first.html);
+
+  const queue: string[] = [];
+  const enqueue = (urls: string[]) => {
+    for (const url of urls) {
+      const cleaned = cleanPageUrl(url, site);
+      const identity = cleaned ? pageIdentity(cleaned) : null;
+      if (!cleaned || !identity || seen.has(identity) || queue.includes(cleaned)) continue;
+      queue.push(cleaned);
+      if (pages.length + queue.length >= SITE_PAGE_LIMIT) return;
+    }
+  };
+  const discovered = discoverPages(site);
+  if (first.html) enqueue(pageLinks(first.body, site));
+  enqueue(await discovered);
+
+  const wave = queue.splice(0, SITE_PAGE_LIMIT - pages.length);
+  const fetched = await mapPool(wave, 4, (url) => fetchDocument(url).catch(() => null));
+  const deeper: string[] = [];
+  for (const document of fetched) {
+    if (!document) continue;
+    keep(document.url, document.body, document.html);
+    if (document.html) deeper.push(...pageLinks(document.body, new URL(document.url)));
+  }
+  if (pages.length < SITE_PAGE_LIMIT) {
+    const more: string[] = [];
+    for (const link of deeper) {
+      const cleaned = cleanPageUrl(link, site);
+      const identity = cleaned ? pageIdentity(cleaned) : null;
+      if (!cleaned || !identity || seen.has(identity) || more.includes(cleaned)) continue;
+      more.push(cleaned);
+      if (pages.length + more.length >= SITE_PAGE_LIMIT) break;
+    }
+    const second = await mapPool(more, 4, (url) => fetchDocument(url).catch(() => null));
+    for (const document of second) {
+      if (!document) continue;
+      keep(document.url, document.body, document.html);
+    }
+  }
+  if (pages.length === 0) throw new BadRequestException('That source has no readable text.');
+  return pages;
+}
+
+async function discoverPages(site: URL) {
+  const seeds = [`${site.origin}/sitemap.xml`];
+  const robots = await fetchDocument(`${site.origin}/robots.txt`).catch(() => null);
+  if (robots) {
+    for (const sitemap of robotsSitemaps(robots.body)) {
+      try {
+        if (sameSite(new URL(sitemap), site)) seeds.push(sitemap);
+      } catch {
+        continue;
+      }
+    }
+  }
+  const pages: string[] = [];
+  const seen = new Set<string>();
+  const queue = seeds.slice(0, 5);
+  let indexes = 0;
+  while (queue.length > 0 && pages.length < SITE_PAGE_LIMIT && indexes < 6) {
+    const url = queue.shift();
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    const document = await fetchDocument(url).catch(() => null);
+    if (!document) continue;
+    indexes += 1;
+    const parsed = sitemapLocs(document.body, site);
+    for (const page of parsed.pages) {
+      if (pages.length >= SITE_PAGE_LIMIT) break;
+      pages.push(page);
+    }
+    for (const child of parsed.indexes) {
+      if (queue.length < 8) queue.push(child);
+    }
+  }
+  return pages;
+}
+
+async function fetchDocument(raw: string) {
   let current = await publicUrl(raw);
   for (let hop = 0; hop < 3; hop += 1) {
     let response: Response;
@@ -61,7 +165,7 @@ export async function textFromLink(raw: string) {
       response = await fetch(current, {
         redirect: 'manual',
         signal: AbortSignal.timeout(10_000),
-        headers: { 'user-agent': 'ai-call-center' },
+        headers: { 'user-agent': 'ai-call-center', accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8' },
       });
     } catch {
       throw new BadRequestException('The link could not be read.');
@@ -78,11 +182,28 @@ export async function textFromLink(raw: string) {
     const bytes = Buffer.from(await response.arrayBuffer());
     if (bytes.length > PAGE_LIMIT) throw new BadRequestException('That page is too large.');
     const type = (response.headers.get('content-type') ?? '').toLowerCase();
-    if (type.includes('pdf') || bytes.subarray(0, 5).toString('utf8') === '%PDF-') return requireText(await pdfText(bytes));
-    const rawText = bytes.toString('utf8');
-    return requireText(type.includes('html') || /<html|<body|<p[\s>]/i.test(rawText.slice(0, 800)) ? pageText(rawText) : rawText);
+    if (type.includes('pdf') || bytes.subarray(0, 5).toString('utf8') === '%PDF-') {
+      return { url: current.toString(), body: await pdfText(bytes), html: false };
+    }
+    const body = bytes.toString('utf8');
+    const html = type.includes('html') || /<html|<body|<main|<a[\s>]/i.test(body.slice(0, 1500));
+    return { url: current.toString(), body, html };
   }
   throw new BadRequestException('The link redirected too many times.');
+}
+
+async function mapPool<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>) {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  async function run() {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(items[index]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => run()));
+  return results;
 }
 
 function documentText(name: string, bytes: Buffer) {
