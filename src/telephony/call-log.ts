@@ -14,6 +14,7 @@ export interface CallLog {
     utterance?: { startedMs: number; durationMs: number },
   ): ExecutionContext | null;
   played(input: { nodeId: string | null; text: string; kind: SpokenKind; startMs: number; endMs: number }): Promise<void>;
+  event(event: Record<string, unknown>): Promise<void>;
   caller(samples: Int16Array): void;
   agent(samples: Int16Array): void;
   touch(): Promise<void>;
@@ -27,6 +28,7 @@ export const silentLog: CallLog = {
   now: () => 0,
   context: () => null,
   played: async () => undefined,
+  event: async () => undefined,
   caller: () => undefined,
   agent: () => undefined,
   touch: async () => undefined,
@@ -76,6 +78,10 @@ export class PhoneCallLog implements CallLog {
         payload: { text: input.text, kind: input.kind, endMs: input.endMs, interrupted: false },
       },
     ]);
+  }
+
+  async event(event: Record<string, unknown>) {
+    await this.executions.addEvents(this.executionId, [{ clientSeq: this.seq++, offsetMs: this.now(), type: String(event.type), nodeId: typeof event.nodeId === 'string' ? event.nodeId : null, payload: event }]);
   }
 
   caller(samples: Int16Array) {

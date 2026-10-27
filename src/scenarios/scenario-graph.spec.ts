@@ -81,7 +81,9 @@ test('accepts a conversational loop and keeps its inquiry settings', () => {
   if (loop?.type !== 'loop') return;
   assert.equal(loop.data.silenceSeconds, 4);
   assert.deepEqual(loop.data.fillers, ['Just a moment.']);
-  assert.equal('instructions' in loop.data, false);
+  assert.equal(loop.data.instructions, 'Find the booking.');
+  assert.equal(loop.data.knowledgeSearch, 'off');
+  assert.equal(loop.data.replyMode, 'realtime');
   assert.equal('verify' in loop.data, false);
   assert.equal(loop.data.sttModelId, modelId);
 });

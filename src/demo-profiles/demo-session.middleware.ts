@@ -44,6 +44,14 @@ export class DemoSessionMiddleware implements NestMiddleware {
       return;
     }
 
+    if (route.kind === 'talk-token') {
+      if (request.body?.scenarioId !== session.scenarioId) {
+        response.status(403).json({ statusCode: 403, message: 'This demo cannot start that scenario.' });
+        return;
+      }
+      (request as Request & { demoScenarioId?: string }).demoScenarioId = session.scenarioId;
+    }
+
     if (route.kind === 'create-execution') {
       const body = request.body as { id?: unknown; scenarioId?: unknown } | undefined;
       const id = typeof body?.id === 'string' ? body.id : '';

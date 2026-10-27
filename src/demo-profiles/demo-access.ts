@@ -1,5 +1,6 @@
 export type DemoRoute =
   | { kind: 'model'; modelId: string }
+  | { kind: 'talk-token' }
   | { kind: 'create-execution' }
   | { kind: 'execution'; executionId: string };
 
@@ -14,6 +15,7 @@ export function demoRoute(method: string, rawPath: string): DemoRoute | null {
   if (transcribe?.[1]) return { kind: 'model', modelId: transcribe[1] };
   const complete = path.match(new RegExp(`^/llm-models/(${UUID})/(?:complete|closing)$`));
   if (complete?.[1]) return { kind: 'model', modelId: complete[1] };
+  if (path === '/telephony/talk-token') return { kind: 'talk-token' };
   if (path === '/scenario-executions') return { kind: 'create-execution' };
   const execution = path.match(new RegExp(`^/scenario-executions/(${UUID})/(?:events|heartbeat|finish|audio)$`));
   if (execution?.[1]) return { kind: 'execution', executionId: execution[1] };

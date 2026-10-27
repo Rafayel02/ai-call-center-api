@@ -1,4 +1,5 @@
 import { WebSocket } from 'ws';
+import { RealtimeTools, runVoiceTool } from './realtime-tools';
 import { fromGeminiOutput, toGeminiInput } from './gemini-audio';
 
 interface RealtimeHandlers {
@@ -6,6 +7,7 @@ interface RealtimeHandlers {
   onClear: () => void;
   onError?: (message: string) => void;
   onReady?: () => void;
+  onFinished?: () => void;
 }
 
 interface GeminiPart {
@@ -15,15 +17,17 @@ interface GeminiPart {
 interface GeminiCall {
   id?: string;
   name?: string;
-  args?: { query?: unknown };
+  args?: Record<string, unknown>;
 }
 
 interface GeminiMessage {
   setupComplete?: unknown;
   error?: { message?: unknown };
   toolCall?: { functionCalls?: GeminiCall[] };
+  toolCallCancellation?: { ids?: string[] };
   serverContent?: {
     interrupted?: unknown;
+    turnComplete?: boolean;
     modelTurn?: { parts?: GeminiPart[] };
   };
 }
@@ -52,6 +56,10 @@ export class GeminiRealtime {
   private ready = false;
   private settled = false;
   private reported = false;
+  private farewellAudio = false;
+  private toolQueue: Promise<void> = Promise.resolve();
+  private readonly toolCalls = new Set<string>();
+  private readonly cancelledTools = new Set<string>();
   private finish: ((ready: boolean) => void) | null = null;
 
   constructor(
@@ -61,9 +69,10 @@ export class GeminiRealtime {
     private readonly instructions: string,
     private readonly greeting: string,
     private readonly handlers: RealtimeHandlers,
-    private readonly lookup?: (query: string) => Promise<string>,
+    private readonly tools?: RealtimeTools,
+    socketFactory: (url: string, options: { perMessageDeflate: boolean }) => WebSocket = (url, options) => new WebSocket(url, options),
   ) {
-    this.socket = new WebSocket(
+    this.socket = socketFactory(
       `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`,
       { perMessageDeflate: false },
     );
@@ -105,26 +114,7 @@ export class GeminiRealtime {
     const setup = geminiSetup(this.model, this.instructions).setup;
     this.socket.send(
       JSON.stringify({
-        setup: this.lookup
-          ? {
-              ...setup,
-              tools: [
-                {
-                  functionDeclarations: [
-                    {
-                      name: 'search_knowledge',
-                      description: 'Search the line documents and return the passages that answer the caller. Call this before every factual answer.',
-                      parameters: {
-                        type: 'OBJECT',
-                        properties: { query: { type: 'STRING', description: 'The caller question.' } },
-                        required: ['query'],
-                      },
-                    },
-                  ],
-                },
-              ],
-            }
-          : setup,
+        setup: this.tools ? { ...setup, tools: [{ functionDeclarations: this.tools.definitions.map((tool) => ({ ...tool, parameters: geminiSchema(tool.parameters), ...(this.nonBlocking(tool.name) ? { behavior: 'NON_BLOCKING' } : {}) })) }] } : setup,
       }),
     );
   }
@@ -155,26 +145,44 @@ export class GeminiRealtime {
       this.handlers.onReady?.();
       const queued = this.pending.splice(0);
       for (const audio of queued) this.push(audio);
-      this.socket.send(JSON.stringify({ realtimeInput: { text: `Greet the caller now, in one short sentence: ${this.greeting}` } }));
+      this.socket.send(JSON.stringify({ realtimeInput: { text: `Begin at the current step. If it is a speech step, say its line then advance. Otherwise greet briefly in the selected language: ${this.greeting}` } }));
     }
-    if (event.toolCall?.functionCalls?.length && this.lookup) void this.answerTools(event.toolCall.functionCalls);
+    for (const id of event.toolCallCancellation?.ids ?? []) this.cancelledTools.add(id);
+    if (event.toolCall?.functionCalls?.length && this.tools) {
+      const calls = event.toolCall.functionCalls;
+      this.toolQueue = this.toolQueue.then(() => this.answerTools(calls)).catch(() => this.report('The voice operation failed.'));
+    }
     if (event.serverContent?.interrupted) this.handlers.onClear();
     for (const part of event.serverContent?.modelTurn?.parts ?? []) {
       const audio = part.inlineData?.data;
-      if (typeof audio === 'string' && audio) this.handlers.onAudio(fromGeminiOutput(audio, this.format));
+      if (typeof audio === 'string' && audio) {
+        if (this.tools?.finished?.()) this.farewellAudio = true;
+        this.handlers.onAudio(fromGeminiOutput(audio, this.format));
+      }
+    }
+    if (event.serverContent?.turnComplete && this.farewellAudio && this.tools?.finished?.()) {
+      this.handlers.onFinished?.();
+      this.close();
     }
   }
 
   private async answerTools(calls: GeminiCall[]) {
-    const lookup = this.lookup;
-    if (!lookup || this.socket.readyState !== WebSocket.OPEN) return;
+    const tools = this.tools;
+    if (!tools || this.socket.readyState !== WebSocket.OPEN) return;
     const functionResponses = [];
     for (const call of calls) {
-      const query = typeof call.args?.query === 'string' ? call.args.query : '';
-      const passages = await lookup(query).catch(() => 'No passage matches this question.');
-      functionResponses.push({ id: call.id, name: call.name || 'search_knowledge', response: { passages } });
+      if (!call.id || !call.name || this.toolCalls.has(call.id) || this.cancelledTools.has(call.id)) continue;
+      if (this.toolCalls.size >= 500) { this.report('The call reached its tool limit.'); this.close(); return; }
+      this.toolCalls.add(call.id);
+      const result = await runVoiceTool(tools, call.name, call.args ?? {});
+      if (this.cancelledTools.has(call.id)) continue;
+      functionResponses.push({ id: call.id, name: call.name, response: { result }, ...(this.nonBlocking(call.name) ? { scheduling: 'WHEN_IDLE' } : {}) });
     }
-    if (this.socket.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify({ toolResponse: { functionResponses } }));
+    if (functionResponses.length && this.socket.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify({ toolResponse: { functionResponses } }));
+  }
+
+  private nonBlocking(name: string) {
+    return /^(gemini-2\.5-|gemini-3\.8-)/.test(this.model) && (name === 'run_step' || name === 'search_knowledge');
   }
 
   private report(message: string) {
@@ -189,4 +197,10 @@ export class GeminiRealtime {
     this.finish?.(ready);
     this.finish = null;
   }
+}
+
+function geminiSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(geminiSchema);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'additionalProperties').map(([key, item]) => [key, key === 'type' && typeof item === 'string' ? item.toUpperCase() : geminiSchema(item)]));
 }

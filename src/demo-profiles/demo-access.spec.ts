@@ -9,6 +9,7 @@ test('allows only the voice calls a demo session needs', () => {
   assert.deepEqual(demoRoute('POST', `/speech-to-text-models/${modelId}/transcribe`), { kind: 'model', modelId });
   assert.deepEqual(demoRoute('POST', `/llm-models/${modelId}/complete`), { kind: 'model', modelId });
   assert.deepEqual(demoRoute('POST', `/llm-models/${modelId}/closing?x=1`), { kind: 'model', modelId });
+  assert.deepEqual(demoRoute('POST', '/telephony/talk-token'), { kind: 'talk-token' });
   assert.deepEqual(demoRoute('POST', '/scenario-executions'), { kind: 'create-execution' });
   assert.deepEqual(demoRoute('POST', `/scenario-executions/${modelId}/audio`), { kind: 'execution', executionId: modelId });
 });

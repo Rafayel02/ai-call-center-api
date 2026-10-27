@@ -1,11 +1,13 @@
 import { WebSocket } from 'ws';
+import { RealtimeTools, readToolArgs, runVoiceTool } from './realtime-tools';
 
 interface RealtimeHandlers {
   onAudio: (payload: string) => void;
   onClear: () => void;
-    onError?: (message: string) => void;
-    onReady?: () => void;
-  }
+  onError?: (message: string) => void;
+  onReady?: () => void;
+  onFinished?: () => void;
+}
 
 /** One speech-to-speech session. Audio goes in and comes back without a separate transcript or voice model. */
 export class OpenAiRealtime {
@@ -16,8 +18,11 @@ export class OpenAiRealtime {
   private ready = false;
   private settled = false;
   private turn = 0;
-  private answering: number | null = null;
-  private transcriptTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly toolCalls = new Set<string>();
+  private toolsBusy = false;
+  private toolQueue: Promise<void> = Promise.resolve();
+  private responseActive = false;
+  private responsePending = false;
   private finish: ((ready: boolean) => void) | null = null;
 
   constructor(
@@ -27,9 +32,10 @@ export class OpenAiRealtime {
     private readonly instructions: string,
     private readonly greeting: string,
     private readonly handlers: RealtimeHandlers,
-    private readonly lookup?: (query: string) => Promise<string>,
+    private readonly tools?: RealtimeTools,
+    socketFactory: (url: string, options: { headers: Record<string, string> }) => WebSocket = (url, options) => new WebSocket(url, options),
   ) {
-    this.socket = new WebSocket(`wss://api.openai.com/v1/realtime?model=${encodeURIComponent(this.model)}`, {
+    this.socket = socketFactory(`wss://api.openai.com/v1/realtime?model=${encodeURIComponent(this.model)}`, {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
     this.done = new Promise((resolve) => {
@@ -71,19 +77,19 @@ export class OpenAiRealtime {
           audio: {
             input: {
               format: audioFormat,
-              ...(this.lookup ? { transcription: { model: 'gpt-4o-mini-transcribe' } } : {}),
-              turn_detection: this.lookup ? { type: 'server_vad', create_response: false } : { type: 'server_vad' },
+              turn_detection: { type: 'server_vad' },
             },
             output: { format: audioFormat, voice: 'marin' },
           },
           instructions: this.instructions,
+          ...(this.tools ? { tools: this.tools.definitions.map((tool) => ({ type: 'function', ...tool })), tool_choice: 'auto' } : {}),
         },
       }),
     );
   }
 
   private take(raw: string) {
-    let event: { type?: string; delta?: unknown; error?: { message?: unknown } };
+    let event: { type?: string; delta?: unknown; response?: { status?: string; output?: Array<{ type?: string; call_id?: string; name?: string; arguments?: string }> }; error?: { message?: unknown } };
     try {
       event = JSON.parse(raw) as typeof event;
     } catch {
@@ -96,26 +102,32 @@ export class OpenAiRealtime {
       this.socket.send(
         JSON.stringify({
           type: 'response.create',
-          response: { instructions: `Greet the caller now, in one short sentence: ${this.greeting}` },
+          response: { instructions: `${this.instructions}\n\nBegin at the current step. If it is a speech step, say its line then advance. Otherwise greet briefly in the selected language: ${this.greeting}` },
         }),
       );
     }
     if (event.type === 'input_audio_buffer.speech_started') {
       this.turn += 1;
-      if (this.transcriptTimer) clearTimeout(this.transcriptTimer);
+      this.responsePending = false;
       this.handlers.onClear();
       if (this.socket.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify({ type: 'response.cancel' }));
     }
-    if (event.type === 'input_audio_buffer.speech_stopped' && this.lookup) {
-      const turn = this.turn;
-      if (this.transcriptTimer) clearTimeout(this.transcriptTimer);
-      this.transcriptTimer = setTimeout(() => {
-        if (turn === this.turn) void this.answer(turn, '');
-      }, 2500);
-    }
-    if (event.type === 'conversation.item.input_audio_transcription.completed' && this.lookup) {
-      const transcript = typeof (event as { transcript?: unknown }).transcript === 'string' ? (event as { transcript: string }).transcript : '';
-      void this.answer(this.turn, transcript);
+    if (event.type === 'response.created') this.responseActive = true;
+    if (event.type === 'response.done') {
+      this.responseActive = false;
+      if (event.response?.status === 'completed' && this.tools) {
+        const calls = (event.response.output ?? []).filter((item) => item.type === 'function_call' && item.call_id && item.name);
+        if (calls.length) {
+          this.toolsBusy = true;
+          const callTurn = this.turn;
+          this.toolQueue = this.toolQueue.then(() => this.answerTools(calls, callTurn)).catch(() => this.handlers.onError?.('The voice operation failed.'));
+        }
+      }
+      if (event.response?.status === 'completed' && this.tools?.finished?.() && event.response.output?.some((item) => item.type === 'message')) {
+        this.handlers.onFinished?.();
+        this.close();
+      }
+      this.flushResponse();
     }
     if ((event.type === 'response.output_audio.delta' || event.type === 'response.audio.delta') && typeof event.delta === 'string' && event.delta) {
       this.handlers.onAudio(event.delta);
@@ -127,29 +139,42 @@ export class OpenAiRealtime {
     }
   }
 
-  private async answer(turn: number, transcript: string) {
-    if (!this.lookup || turn !== this.turn || this.answering === turn || this.socket.readyState !== WebSocket.OPEN) return;
-    this.answering = turn;
-    if (this.transcriptTimer) clearTimeout(this.transcriptTimer);
-    const passages = await this.lookup(transcript).catch(() => 'No passage matches this question.');
-    if (this.turn !== turn || this.socket.readyState !== WebSocket.OPEN) return;
-    this.socket.send(
-      JSON.stringify({
-        type: 'response.create',
-        response: {
-          instructions: [
-            this.instructions,
-            `Passages from the documents:\n${passages}`,
-            transcript.trim() ? `The caller said: ${transcript.trim()}` : 'The caller was unclear.',
-            'Answer now in one or two short sentences. Use only the passages.',
-          ].join('\n\n'),
-        },
-      }),
-    );
+  private async answerTools(calls: Array<{ call_id?: string; name?: string; arguments?: string }>, turn: number) {
+    const tools = this.tools;
+    if (!tools) return;
+    let outputs = 0;
+    this.toolsBusy = true;
+    try {
+      for (const call of calls) {
+        if (!call.call_id || !call.name || this.toolCalls.has(call.call_id)) continue;
+        if (this.toolCalls.size >= 500) { this.handlers.onError?.('The call reached its tool limit.'); this.close(); return; }
+        this.toolCalls.add(call.call_id);
+        let output: unknown;
+        try {
+          output = turn === this.turn ? await runVoiceTool(tools, call.name, readToolArgs(call.arguments ?? '{}')) : { status: 'interrupted', message: 'The caller has started a new turn. Re-evaluate their request.' };
+        } catch {
+          output = { status: 'invalid_arguments', message: 'Provide valid JSON arguments.' };
+        }
+        if (this.settled || this.socket.readyState !== WebSocket.OPEN) return;
+        outputs += 1;
+        this.socket.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: call.call_id, output: JSON.stringify(output) } }));
+      }
+      // Keep the result in history, but never start a stale answer over a new caller turn.
+      if (outputs && turn === this.turn) this.responsePending = true;
+    } finally {
+      this.toolsBusy = false;
+      this.flushResponse();
+    }
+  }
+
+  private flushResponse() {
+    if (!this.responsePending || this.responseActive || this.toolsBusy || this.socket.readyState !== WebSocket.OPEN) return;
+    this.responsePending = false;
+    this.responseActive = true;
+    this.socket.send(JSON.stringify({ type: 'response.create' }));
   }
 
   private stop(ready: boolean) {
-    if (this.transcriptTimer) clearTimeout(this.transcriptTimer);
     if (this.settled) return;
     this.settled = true;
     this.finish?.(ready);
