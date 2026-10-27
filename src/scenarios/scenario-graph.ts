@@ -16,6 +16,9 @@ export interface TtsNodeData {
 }
 
 export interface LoopNodeData {
+  instructions?: string;
+  knowledgeSearch?: 'off' | 'optional' | 'required';
+  replyMode?: 'realtime' | 'llm';
   sttModelId: string | null;
   ttsModelId: string | null;
   llmModelId: string | null;
@@ -187,6 +190,9 @@ function parseLoopData(value: unknown, languages?: ScenarioLanguage[]): LoopNode
     llmModelId: parseModelId(data.llmModelId, 'Choose an LLM.'),
     silenceSeconds: parseBoundedInt(data.silenceSeconds, 4, 1, 30, 'Silence must be between 1 and 30 seconds.'),
     maxTurns: parseBoundedInt(data.maxTurns, 8, 1, 20, 'Max turns must be between 1 and 20.'),
+    instructions: stepInstructions(data.instructions),
+    knowledgeSearch: stepOption(data.knowledgeSearch, ['off', 'optional', 'required'] as const, 'off'),
+    replyMode: stepOption(data.replyMode, ['realtime', 'llm'] as const, 'realtime'),
   };
   if (languages && languages.length > 0) {
     return { ...shared, fillerTexts: requireFillerTexts(data.fillerTexts, languages) };
@@ -449,4 +455,16 @@ function parseEdge(value: unknown, nodes: ScenarioGraphNode[]): ScenarioGraphEdg
   return sourceHandle
     ? { id: edge.id, source: edge.source, target: edge.target, sourceHandle }
     : { id: edge.id, source: edge.source, target: edge.target };
+}
+
+function stepInstructions(value: unknown) {
+  if (value === undefined) return '';
+  if (typeof value !== 'string' || value.length > 4000) throw new BadRequestException('Step instructions must be at most 4000 characters.');
+  return value.trim();
+}
+
+function stepOption<T extends string>(value: unknown, options: readonly T[], fallback: T): T {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'string' || !options.includes(value as T)) throw new BadRequestException('Invalid conversational step policy.');
+  return value as T;
 }

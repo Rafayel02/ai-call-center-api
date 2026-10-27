@@ -8,7 +8,7 @@ import { LlmService } from '../llm/llm.service';
 import { ScenarioExecutionsService } from '../scenario-executions/scenario-executions.service';
 import { PhoneStreamingService } from '../phone-streaming/phone-streaming.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { readScenarioGraph, ScenarioGraph } from '../scenarios/scenario-graph';
+import { parseScenarioGraph, readScenarioGraph, ScenarioGraph } from '../scenarios/scenario-graph';
 import { SpeechToTextService } from '../speech-to-text/speech-to-text.service';
 import { TextToSpeechService } from '../text-to-speech/text-to-speech.service';
 import { CallLog, PhoneCallLog, silentLog } from './call-log';
@@ -16,6 +16,8 @@ import { mintCallToken, readCallToken } from './call-token';
 import { CallDeps, PhoneScenarioSession } from './call-session';
 import { GeminiRealtime } from './gemini-realtime';
 import { OpenAiRealtime } from './openai-realtime';
+import { ScenarioVoice } from './scenario-voice';
+import { RealtimeTools, SEARCH_TOOL, withVoiceTimeout } from './realtime-tools';
 import { KnowledgeService } from '../scenarios/knowledge.service';
 import { briefFromParts, promptBrief, readVoiceMode, readVoicePrompt, realtimeBrief, VoiceMode } from './realtime-brief';
 import { VoicePrompts, readVoicePrompts, voicePromptFor } from '../scenarios/voice-context';
@@ -145,16 +147,9 @@ export class TelephonyService {
       if (apiKey) {
         const ready = await this.speakLive(socket, session, pending, log, apiKey);
         await log.finish(ready ? ExecutionStatus.FINISHED : ExecutionStatus.FAILED, ready ? undefined : 'The live voice did not start.');
-      } else if (gemini) {
-        this.logger.warn('No enabled Gemini key, so the live call could not start.');
-        await log.finish(ExecutionStatus.FAILED, 'Add an enabled Gemini key under LLMs before using this voice.');
-        socket.close();
       } else {
-        this.logger.warn('No enabled OpenAI model, so the call used the slower scenario path.');
-        socket.on('message', (data) => session.receive(String(data)));
-        await session.run();
-        const outcome = session.outcome();
-        await log.finish(outcome.reachedEnd ? ExecutionStatus.FINISHED : ExecutionStatus.STOPPED);
+        await log.finish(ExecutionStatus.FAILED, `Add an enabled ${gemini ? 'Gemini' : 'OpenAI'} key under LLMs before using realtime voice.`);
+        socket.close();
       }
     } catch (error) {
       this.logger.warn(`Phone scenario failed: ${error instanceof Error ? error.message : 'unknown error'}`);
@@ -215,8 +210,8 @@ export class TelephonyService {
     });
   }
 
-  talkToken(userId: string) {
-    return mintCallToken(this.secret(), `talk:${userId}`, Date.now(), 5 * 60_000);
+  talkToken(userId: string, scenarioId?: string) {
+    return mintCallToken(this.secret(), `talk:${userId}${scenarioId ? `:${scenarioId}` : ""}`, Date.now(), 5 * 60_000);
   }
 
   openTalk(socket: WebSocket, request: IncomingMessage) {
@@ -232,7 +227,7 @@ export class TelephonyService {
     const stop = () => realtime?.close();
     socket.on('close', stop);
     socket.on('message', (data) => {
-      let message: { type?: string; audio?: string; language?: string; lines?: unknown; topics?: unknown; closing?: unknown; model?: unknown; mode?: unknown; prompt?: unknown; scenarioId?: unknown };
+      let message: { type?: string; audio?: string; language?: string; lines?: unknown; topics?: unknown; closing?: unknown; model?: unknown; mode?: unknown; prompt?: unknown; scenarioId?: unknown; graph?: unknown };
       try {
         message = JSON.parse(String(data)) as typeof message;
       } catch {
@@ -240,10 +235,13 @@ export class TelephonyService {
       }
       if (message.type === 'start' && !starting) {
         starting = true;
-        void this.beginTalk(socket, message).then((session) => {
+        void this.beginTalk(socket, message, owner.split(':')[2]).then((session) => {
           realtime = session;
           if (!session) return;
           for (const audio of queued.splice(0)) session.sendAudio(audio);
+        }).catch((error) => {
+          if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'error', message: error instanceof Error ? error.message : 'The voice could not start.' }));
+          socket.close();
         });
         return;
       }
@@ -261,14 +259,21 @@ export class TelephonyService {
     format: 'pcmu' | 'pcm',
     brief: { instructions: string; greeting: string },
     handlers: ConstructorParameters<typeof OpenAiRealtime>[5],
-    lookup?: (query: string) => Promise<string>,
+    tools?: RealtimeTools,
   ): LiveVoice {
     return isGeminiLiveModel(model)
-      ? new GeminiRealtime(apiKey, model, format, brief.instructions, brief.greeting, handlers, lookup)
-      : new OpenAiRealtime(apiKey, model, format, brief.instructions, brief.greeting, handlers, lookup);
+      ? new GeminiRealtime(apiKey, model, format, brief.instructions, brief.greeting, handlers, tools)
+      : new OpenAiRealtime(apiKey, model, format, brief.instructions, brief.greeting, handlers, tools);
   }
 
-  private async beginTalk(socket: WebSocket, message: { language?: string; lines?: unknown; topics?: unknown; closing?: unknown; model?: unknown; mode?: unknown; prompt?: unknown; scenarioId?: unknown }) {
+  private async beginTalk(socket: WebSocket, message: { language?: string; lines?: unknown; topics?: unknown; closing?: unknown; model?: unknown; mode?: unknown; prompt?: unknown; scenarioId?: unknown; graph?: unknown }, scopedScenarioId?: string) {
+    if (scopedScenarioId) {
+      if (message.scenarioId !== scopedScenarioId) throw new Error('This demo cannot start that scenario.');
+      const saved = await this.prisma.scenario.findUnique({ where: { id: scopedScenarioId }, select: { graph: true, voiceMode: true, realtimeModel: true, voicePrompts: true, voicePrompt: true, languages: true } });
+      if (!saved) throw new Error('Scenario not found.');
+      if (!message.language || !saved.languages.includes(message.language)) throw new Error('This language is not enabled for this demo.');
+      message = { ...message, graph: saved.graph, mode: saved.voiceMode, model: saved.realtimeModel, prompt: voicePromptFor(readVoicePrompts(saved.voicePrompts, saved.voicePrompt), message.language as ScenarioLanguage) };
+    }
     const model = readRealtimeModel(message.model);
     const gemini = isGeminiLiveModel(model);
     const apiKey = await this.llm.realtimeKey(gemini ? LlmProvider.GEMINI : LlmProvider.OPENAI);
@@ -283,8 +288,15 @@ export class TelephonyService {
     const brief = mode === 'prompt'
       ? promptBrief(language, message.prompt)
       : briefFromParts(language, textList(message.lines), textList(message.topics), typeof message.closing === 'string' ? message.closing : '');
-    const lookup = mode === 'prompt' ? await this.contextLookup(message.scenarioId) : undefined;
-    return this.liveSession(apiKey, model, 'pcm', brief, {
+    const graph = mode === 'scenario' ? await this.talkGraph(message.scenarioId, message.graph) : null;
+    const tools = mode === 'prompt' ? await this.contextTools(message.scenarioId) : await this.scenarioTools(graph!, language, message.scenarioId, (event) => {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'workflow', event }));
+    });
+    const voiceBrief = tools instanceof ScenarioVoice ? tools.brief() : brief;
+    return this.liveSession(apiKey, model, 'pcm', voiceBrief, {
+      onFinished: () => {
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'finished' }));
+      },
       onReady: () => {
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'ready' }));
       },
@@ -298,15 +310,21 @@ export class TelephonyService {
         this.logger.warn(`Live voice: ${error}`);
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'error', message: error }));
       },
-    }, lookup);
+    }, tools);
   }
 
   private async speakLive(socket: WebSocket, session: PhoneScenarioSession, pending: PendingCall, log: CallLog, apiKey: string) {
     const language = pending.chosenLanguage ?? pending.languages[0] ?? 'en';
     const brief = pending.voiceMode === 'prompt' ? promptBrief(language, voicePromptFor(pending.voicePrompts, language)) : realtimeBrief(pending.graph, language);
-    const lookup = pending.voiceMode === 'prompt' ? await this.contextLookup(pending.scenarioId) : undefined;
+    const tools = pending.voiceMode === 'prompt' ? await this.contextTools(pending.scenarioId) : await this.scenarioTools(pending.graph, language, pending.scenarioId, (event) => { void log.event(event).catch(() => this.logger.warn('Could not record workflow event.')); });
+    const voiceBrief = tools instanceof ScenarioVoice ? tools.brief() : brief;
     let ready = false;
-    const realtime = this.liveSession(apiKey, pending.realtimeModel, 'pcmu', brief, {
+    let playbackUntil = Date.now();
+    const realtime = this.liveSession(apiKey, pending.realtimeModel, 'pcmu', voiceBrief, {
+      onFinished: () => {
+        const timer = setTimeout(() => { void this.endCall(pending.callSid).finally(() => socket.close()); }, Math.max(0, playbackUntil - Date.now()) + 200);
+        socket.once('close', () => clearTimeout(timer));
+      },
       onReady: () => {
         ready = true;
       },
@@ -314,9 +332,11 @@ export class TelephonyService {
         const streamSid = session.streamId();
         if (!streamSid || socket.readyState !== WebSocket.OPEN) return;
         socket.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
+        playbackUntil = Math.max(Date.now(), playbackUntil) + Buffer.from(payload, 'base64').length / 8;
         log.agent(decodeUlaw(Buffer.from(payload, 'base64')));
       },
       onClear: () => {
+        playbackUntil = Date.now();
         const streamSid = session.streamId();
         if (streamSid && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ event: 'clear', streamSid }));
       },
@@ -324,7 +344,7 @@ export class TelephonyService {
         this.logger.warn(`Live voice: ${message}`);
         if (!ready && socket.readyState === WebSocket.OPEN) socket.close();
       },
-    }, lookup);
+    }, tools);
     socket.on('message', (data) => {
       let message: { event?: string; media?: { payload?: string } };
       try {
@@ -342,10 +362,48 @@ export class TelephonyService {
     return realtime.done;
   }
 
-  private async contextLookup(scenarioId: unknown) {
-    if (typeof scenarioId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(scenarioId)) return undefined;
+  private async contextTools(scenarioId: unknown): Promise<RealtimeTools> {
+    const search = await this.knowledgeSearch(scenarioId);
+    return {
+      definitions: [SEARCH_TOOL],
+      execute: async (_name, args) => {
+        const query = typeof args.query === 'string' ? args.query.trim() : '';
+        if (!query || query.length > 4000) return { status: 'invalid_query' };
+        const passages = await withVoiceTimeout(search(query));
+        return { status: passages === 'No passage matches this question.' ? 'no_match' : 'ok', passages };
+      },
+    };
+  }
+
+  private async knowledgeSearch(scenarioId: unknown) {
+    if (typeof scenarioId !== 'string' || !/^[0-9a-f-]{36}$/i.test(scenarioId)) throw new Error('Choose a scenario before talking.');
     const loaded = await this.knowledge.load(scenarioId);
-    return loaded ? (query: string) => loaded.search(query) : undefined;
+    return async (query: string) => {
+      if (!loaded) throw new Error('Learn sources for this scenario before searching its knowledge.');
+      return loaded.search(query);
+    };
+  }
+
+  private async talkGraph(scenarioId: unknown, draft: unknown) {
+    if (typeof scenarioId !== 'string') throw new Error('Choose a scenario before talking.');
+    const saved = await this.prisma.scenario.findUnique({ where: { id: scenarioId }, select: { graph: true } });
+    if (!saved) throw new Error('Scenario not found.');
+    return parseScenarioGraph(draft ?? saved.graph);
+  }
+
+  private async scenarioTools(graph: ScenarioGraph, language: ScenarioLanguage, scenarioId: unknown, trace: (event: Record<string, unknown>) => void) {
+    const search = await this.knowledgeSearch(scenarioId);
+    const scenario = await this.prisma.scenario.findUnique({ where: { id: String(scenarioId) }, select: { languageModels: true } });
+    const voice = languageModelsFor([language], scenario?.languageModels, false)[language];
+    if (graph.nodes.some((node) => node.type === 'loop' && node.data.replyMode === 'llm') && !voice?.llmModelId) throw new Error('Choose the language LLM under Models before starting this scenario.');
+    return new ScenarioVoice(graph, language, {
+      search,
+      reply: (query, instructions, passages) => {
+        if (!voice?.llmModelId) throw new Error('Choose a language LLM for this step.');
+        return this.llm.voiceReply(voice.llmModelId, language, query, instructions, passages);
+      },
+      trace: (event) => { this.logger.log(`Voice workflow ${String(event.type)} on ${String(event.nodeId)}`); trace(event); },
+    });
   }
 
   private async openLog(pending: PendingCall) {

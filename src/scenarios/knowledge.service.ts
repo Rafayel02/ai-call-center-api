@@ -1,10 +1,11 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { LlmService } from '../llm/llm.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { chunkText, decodeVector, encodeVector, knowledgeGuide, searchPassages } from './knowledge';
 
 @Injectable()
 export class KnowledgeService {
+  private readonly logger = new Logger(KnowledgeService.name);
   constructor(
     private readonly prisma: PrismaService,
     private readonly llm: LlmService,
@@ -41,8 +42,9 @@ export class KnowledgeService {
         try {
           const [vector] = await this.llm.embed([trimmed]);
           return searchPassages(decodeVector(encodeVector(vector)), loaded);
-        } catch {
-          return 'No passage matches this question.';
+        } catch (error) {
+          this.logger.warn(`Knowledge lookup failed for scenario ${scenarioId}: ${error instanceof Error ? error.name : 'unknown error'}`);
+          throw new Error('Knowledge search is temporarily unavailable.');
         }
       },
     };

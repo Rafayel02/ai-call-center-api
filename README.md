@@ -59,3 +59,23 @@ Railway builds with Nixpacks and starts with the command in `railway.toml`. Set 
 4. Add the provider to the frontend provider list and its form fields.
 
 ElevenLabs is validated with `GET https://api.elevenlabs.io/v1/user`. That confirms the API key. It does not run a billed transcription.
+
+## Scenario-controlled realtime voice
+
+Scenario mode now executes the connected graph on the server instead of flattening it into a voice briefing. The realtime model asks questions, speaks configured lines, and requests tools; `ScenarioVoice` owns the current node, revision, connected routes, and operation limits. Both browser Play/replay and Twilio use this controller. Browser Play passes the validated draft graph; phone and public demo sessions use saved settings. Public demo talk tokens are bound to their assigned scenario.
+
+Each conversational loop supports:
+
+- `instructions` (up to 4000 characters): what to collect, how to handle the request, and when to continue.
+- `knowledgeSearch`: `off` (default for existing graphs), `optional`, or `required`. Required searches run in the backend even when the voice requests no search.
+- `replyMode`: `realtime` (default) or `llm`. The latter calls the scenario language's configured LLM with the question, step instructions, and successful retrieved passages, then gives its draft to the voice model.
+
+A loop calls `run_step` for each factual response. Search results are limited passages from this scenario's learned knowledge. Empty results and failed operations have distinct statuses. `advance_scenario` can follow only a configured outgoing edge, with matching node ID and revision; topic switches and closing steps require a valid route. Search and LLM calls time out after 15 seconds. Concurrent, stale, and out-of-step requests cannot move the graph. Limits are 100 transitions per session and the configured max step requests per loop visit. A short configured delay line may be spoken while work runs. Reaching End finishes after a goodbye.
+
+Add and Learn sources using the scenario's Knowledge panel, select Required on the support loop, and start a new conversation. For a separate drafting model, choose Language LLM in the step and configure the language model under Models. No database migration is needed: step policy is stored in the graph JSON. Existing scenarios keep search off until explicitly enabled; existing Context mode remains available and now uses a knowledge tool on OpenAI as well as Gemini, without the transcription timeout path.
+
+Example: Start → greeting → conversational loop (ask destination; required search; answer roaming questions until satisfied) → Closing. Connect Still has questions back to the loop and No more questions to End. Topic switches can route to different loops with different instructions and search policies. No account mutation, booking, payment, or live transfer integrations are added by this change; do not describe those actions as completed.
+
+Workflow node, search-result, and operation events are recorded with browser executions and phone calls. Search events include the query and returned passages. Runtime logs include event type and node ID without document contents. Review Executions to distinguish missing information from failed retrieval. The voice model follows step instructions and factual-grounding rules; server enforcement covers tools and graph transitions, not a guarantee about every spoken word.
+
+Validation uses deterministic provider doubles for tool protocol, interruption, graph routing, required retrieval, separate drafting, missing facts, and operation errors. Real provider voice and Twilio calls still require a deployment and a live acceptance call.
