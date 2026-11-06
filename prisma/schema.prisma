@@ -152,12 +152,14 @@ model OrganizationResource {
   name           String
   byteSize       Int            @map("byte_size")
   openaiFileId   String         @unique @map("openai_file_id")
+  sourceUrl      String?        @map("source_url")
   status         ResourceStatus @default(INDEXING)
   errorMessage   String?        @map("error_message")
   createdAt      DateTime       @default(now()) @map("created_at")
   createdById    String         @map("created_by") @db.Uuid
   createdBy      User           @relation(fields: [createdById], references: [id], onDelete: Restrict)
 
+  @@unique([organizationId, sourceUrl])
   @@index([organizationId])
   @@index([createdById])
   @@map("organization_resources")

@@ -2,7 +2,12 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from '@nes
 import { Prisma, ResourceStatus } from '@prisma/client';
 import { LlmService } from '../llm/llm.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { pageIdentity } from '../scenarios/site-pages';
+import { publicUrl } from '../scenarios/voice-sources';
 import { decodeResource, resourceFileName, type IndexState } from './organization-resources';
+import { crawlWebsite } from './site-crawl';
+import { withFrontMatter } from './site-export';
+import { fetchPublicPage } from './site-fetch';
 import {
   attachOpenAiFile,
   createOpenAiVectorStore,
@@ -17,10 +22,15 @@ const publicResource = {
   id: true,
   name: true,
   byteSize: true,
+  sourceUrl: true,
   status: true,
   errorMessage: true,
   createdAt: true,
 } satisfies Prisma.OrganizationResourceSelect;
+
+export type SiteImportEvent =
+  | { type: 'exported'; resource: Prisma.OrganizationResourceGetPayload<{ select: typeof publicResource }> }
+  | { type: 'done'; discovered: number; exported: number; skipped: number; failed: number };
 
 @Injectable()
 export class ResourcesService {
@@ -54,30 +64,52 @@ export class ResourcesService {
     });
     if (!organization) throw new NotFoundException('Organization not found.');
     const apiKey = await this.key();
-    let storeId = organization.openaiVectorStoreId;
-    let fileId: string | null = null;
-    try {
-      storeId = await this.ensureStore(organization, apiKey);
-      fileId = await uploadOpenAiFile(apiKey, name, bytes);
-      await attachOpenAiFile(apiKey, storeId, fileId);
-      const indexed = await this.waitForIndex(apiKey, storeId, fileId);
-      return await this.prisma.organizationResource.create({
-        data: {
-          organizationId,
-          name,
-          byteSize: bytes.length,
-          openaiFileId: fileId,
-          status: indexed.status,
-          errorMessage: indexed.errorMessage,
-          createdById,
-        },
-        select: publicResource,
-      });
-    } catch (error) {
-      if (fileId && storeId) await deleteOpenAiFile(apiKey, storeId, fileId).catch(() => undefined);
-      if (error instanceof BadRequestException || error instanceof NotFoundException) throw error;
-      throw new BadRequestException(this.openAiMessage(error));
-    }
+    const saved = await this.persist(organization, apiKey, name, bytes, null, createdById, 8);
+    if (!saved) throw new BadRequestException('OpenAI could not index the file.');
+    return saved;
+  }
+
+  async assertCanImport(organizationId: string, url: string) {
+    await publicUrl(url.trim());
+    const organization = await this.organization(organizationId);
+    await this.ensureStore(organization, await this.key());
+  }
+
+  async importSite(organizationId: string, url: string, createdById: string, emit: (event: SiteImportEvent) => void) {
+    const start = await publicUrl(url.trim());
+    const organization = await this.organization(organizationId);
+    const apiKey = await this.key();
+    const rows = await this.prisma.organizationResource.findMany({
+      where: { organizationId, sourceUrl: { not: null } },
+      select: { sourceUrl: true },
+    });
+    const known = new Set(rows.map((row) => row.sourceUrl).filter((value): value is string => Boolean(value)));
+    const report = await crawlWebsite(start.toString(), {
+      known,
+      fetchPage: (page) => fetchPublicPage(page),
+      onPage: async (page) => {
+        const document = withFrontMatter({
+          title: page.title,
+          source: page.url,
+          finalUrl: page.finalUrl,
+          markdown: page.markdown,
+          fetchedAt: new Date().toISOString(),
+        });
+        const bytes = Buffer.from(document.text, 'utf8');
+        if (bytes.length > 1_000_000) throw new Error('This page is larger than 1 MB.');
+        const saved = await this.persist(organization, apiKey, resourceFileName(page.fileName), bytes, pageIdentity(page.url) ?? page.url, createdById, 1);
+        if (!saved) return 'duplicate';
+        emit({ type: 'exported', resource: saved });
+        return 'saved';
+      },
+    });
+    emit({
+      type: 'done',
+      discovered: report.discovered,
+      exported: report.exported.length,
+      skipped: report.skipped.length,
+      failed: report.failed.length,
+    });
   }
 
   async remove(organizationId: string, resourceId: string) {
@@ -147,6 +179,53 @@ export class ResourcesService {
     }
   }
 
+  private async organization(id: string) {
+    const organization = await this.prisma.organization.findUnique({
+      where: { id },
+      select: { id: true, name: true, openaiVectorStoreId: true },
+    });
+    if (!organization) throw new NotFoundException('Organization not found.');
+    return organization;
+  }
+
+  private async persist(
+    organization: { id: string; name: string; openaiVectorStoreId: string | null },
+    apiKey: string,
+    name: string,
+    bytes: Buffer,
+    sourceUrl: string | null,
+    createdById: string,
+    attempts: number,
+  ) {
+    let storeId = organization.openaiVectorStoreId;
+    let fileId: string | null = null;
+    try {
+      storeId = await this.ensureStore(organization, apiKey);
+      organization.openaiVectorStoreId = storeId;
+      fileId = await uploadOpenAiFile(apiKey, name, bytes);
+      await attachOpenAiFile(apiKey, storeId, fileId);
+      const indexed = await this.waitForIndex(apiKey, storeId, fileId, attempts);
+      return await this.prisma.organizationResource.create({
+        data: {
+          organizationId: organization.id,
+          name,
+          byteSize: bytes.length,
+          openaiFileId: fileId,
+          sourceUrl,
+          status: indexed.status,
+          errorMessage: indexed.errorMessage,
+          createdById,
+        },
+        select: publicResource,
+      });
+    } catch (error) {
+      if (fileId && storeId) await deleteOpenAiFile(apiKey, storeId, fileId).catch(() => undefined);
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return null;
+      if (error instanceof BadRequestException || error instanceof NotFoundException) throw error;
+      throw new BadRequestException(this.openAiMessage(error));
+    }
+  }
+
   private async ensureStore(organization: { id: string; name: string; openaiVectorStoreId: string | null }, apiKey: string) {
     if (organization.openaiVectorStoreId) return organization.openaiVectorStoreId;
     const created = await createOpenAiVectorStore(apiKey, organization.name);
@@ -164,10 +243,11 @@ export class ResourcesService {
     return current.openaiVectorStoreId;
   }
 
-  private async waitForIndex(apiKey: string, vectorStoreId: string, fileId: string): Promise<IndexState> {
-    for (let attempt = 0; attempt < 8; attempt += 1) {
+  private async waitForIndex(apiKey: string, vectorStoreId: string, fileId: string, attempts: number): Promise<IndexState> {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
       const indexed = await readOpenAiFile(apiKey, vectorStoreId, fileId);
       if (indexed.status !== 'INDEXING') return indexed;
+      if (attempt === attempts - 1) return { status: 'INDEXING', errorMessage: null };
       await new Promise((resolve) => setTimeout(resolve, 700));
     }
     return { status: 'INDEXING', errorMessage: null };
