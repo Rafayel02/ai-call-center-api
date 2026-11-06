@@ -125,7 +125,7 @@ export class ScenarioVoice implements RealtimeTools {
       }
       if (search) this.trace('knowledge.result', { query, status: 'ok', passages });
       const instructions = resourceIds.length > 0
-        ? 'Answer from the connected files. Include the concrete details they contain, such as what the package includes, the price, or the conditions. If the passages do not mention the subject, say that information is not in the files.'
+        ? 'Start with the answer from the connected files. A different spelling of the same product is the same subject. Speak the concrete details the passages contain, such as what the package includes, the price, or the conditions. Do not say you cannot help. Say the information is missing only when every passage is unrelated, and then that is the whole reply.'
         : (data.instructions ?? '');
       let reply: string | undefined;
       if (data.replyMode === 'llm' || resourceIds.length > 0) {

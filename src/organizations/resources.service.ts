@@ -76,7 +76,7 @@ export class ResourcesService {
     const trimmed = query.trim();
     if (!trimmed || !llmModelId || resourceIds.length === 0 || isSocialTurn(trimmed)) return null;
     const passages = await this.passages(organizationId, resourceIds, trimmed);
-    const instructions = 'Answer from the connected files. Include the concrete details they contain, such as what the package includes, the price, or the conditions. If the passages do not mention the subject, say that information is not in the files.';
+    const instructions = 'Start with the answer from the connected files. A different spelling of the same product is the same subject. Speak the concrete details the passages contain, such as what the package includes, the price, or the conditions. Do not say you cannot help. Say the information is missing only when every passage is unrelated, and then that is the whole reply.';
     try {
       const reply = (await this.llm.voiceReply(llmModelId, languageName, trimmed, instructions, passages)).trim();
       return reply || null;
