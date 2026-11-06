@@ -185,11 +185,18 @@ export class ScenariosService implements OnModuleInit {
   }
 
   async saveGraph(id: string, dto: SaveScenarioGraphDto) {
-    const existing = await this.prisma.scenario.findUnique({ where: { id }, select: { languages: true } });
+    const existing = await this.prisma.scenario.findUnique({ where: { id }, select: { languages: true, organizationId: true } });
     if (!existing) throw new NotFoundException('Scenario not found.');
     const languages = existing.languages.filter(isScenarioLanguage);
     const prompts = dto.voicePrompts === undefined ? undefined : readVoicePrompts(dto.voicePrompts, dto.voicePrompt);
     const graph = parseScenarioGraph(dto, languages);
+    const resourceIds = [...new Set(graph.nodes.flatMap((node) => (node.type === 'resources' ? node.data.resourceIds : [])))];
+    if (resourceIds.length > 0) {
+      const owned = await this.prisma.organizationResource.count({
+        where: { organizationId: existing.organizationId, id: { in: resourceIds } },
+      });
+      if (owned !== resourceIds.length) throw new BadRequestException('Choose resources from this organization.');
+    }
     const languageModels = dto.languageModels === undefined ? undefined : languageModelsFor(languages, dto.languageModels, true);
     const ids = modelIds(languageModels);
     await this.assertModels(this.prisma.textToSpeechModel, ids.tts, 'Choose a text-to-speech model that exists.');

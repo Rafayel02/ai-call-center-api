@@ -200,6 +200,53 @@ test('rejects a closing step whose finished path does not reach end', () => {
   );
 });
 
+test('keeps the resources chosen for one conversational loop', () => {
+  const resourceId = '22222222-2222-4222-8222-222222222222';
+  const graph = parseScenarioGraph({
+    nodes: [
+      { id: 'loop-1', type: 'loop', position: { x: 0, y: 0 }, data: {} },
+      { id: 'resources-1', type: 'resources', position: { x: 40, y: 0 }, data: { resourceIds: [resourceId, resourceId] } },
+    ],
+    edges: [{ id: 'e-1', source: 'resources-1', target: 'loop-1' }],
+  });
+  const node = graph.nodes.find((item) => item.type === 'resources');
+  assert.equal(node?.type, 'resources');
+  if (node?.type !== 'resources') return;
+  assert.deepEqual(node.data.resourceIds, [resourceId]);
+});
+
+test('rejects two resource blocks on one conversational loop', () => {
+  assert.throws(
+    () =>
+      parseScenarioGraph({
+        nodes: [
+          { id: 'loop-1', type: 'loop', position: { x: 0, y: 0 }, data: {} },
+          { id: 'resources-1', type: 'resources', position: { x: 0, y: 40 }, data: { resourceIds: [] } },
+          { id: 'resources-2', type: 'resources', position: { x: 40, y: 40 }, data: { resourceIds: [] } },
+        ],
+        edges: [
+          { id: 'e-1', source: 'resources-1', target: 'loop-1' },
+          { id: 'e-2', source: 'resources-2', target: 'loop-1' },
+        ],
+      }),
+    /one Resources block/,
+  );
+});
+
+test('rejects a resources block that does not connect to a loop', () => {
+  assert.throws(
+    () =>
+      parseScenarioGraph({
+        nodes: [
+          { id: 'end', type: 'end', position: { x: 0, y: 0 }, data: {} },
+          { id: 'resources-1', type: 'resources', position: { x: 0, y: 40 }, data: { resourceIds: [] } },
+        ],
+        edges: [{ id: 'e-1', source: 'resources-1', target: 'end' }],
+      }),
+    /one conversational loop/,
+  );
+});
+
 test('rejects a topic that does not lead to end', () => {
   assert.throws(
     () =>

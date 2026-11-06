@@ -32,6 +32,13 @@ export class ScenarioVoice implements RealtimeTools {
     const starts = graph.nodes.filter((node) => node.type === 'start');
     if (starts.length !== 1 || !graph.nodes.some((node) => node.type === 'end')) throw new Error('Connect one Start through to End before starting the scenario.');
     for (const node of graph.nodes) {
+      if (node.type === 'resources') {
+        const next = graph.edges.filter((edge) => edge.source === node.id);
+        if (next.length > 1) throw new Error('A Resources block connects to one conversational loop.');
+        const target = graph.nodes.find((item) => item.id === next[0]?.target);
+        if (next.length === 1 && target?.type !== 'loop') throw new Error('Connect each Resources block to one conversational loop.');
+        continue;
+      }
       if (node.type === 'end' || node.type === 'switch' || node.type === 'closing') continue;
       if (graph.edges.filter((edge) => edge.source === node.id).length !== 1) throw new Error('Each speech or conversational step needs exactly one next step.');
     }

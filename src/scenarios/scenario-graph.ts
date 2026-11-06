@@ -1,7 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { LANGUAGE_NAME, ScenarioLanguage, isScenarioLanguage } from './scenario-languages';
 
-export const SCENARIO_NODE_TYPES = ['start', 'end', 'tts', 'loop', 'switch', 'closing'] as const;
+export const SCENARIO_NODE_TYPES = ['start', 'end', 'tts', 'loop', 'switch', 'closing', 'resources'] as const;
 
 export const CLOSING_HANDLES = ['questions', 'done'] as const;
 
@@ -47,12 +47,17 @@ export interface ClosingNodeData {
   texts?: Partial<Record<ScenarioLanguage, string>>;
 }
 
+export interface ResourcesNodeData {
+  resourceIds: string[];
+}
+
 export type ScenarioGraphNode =
   | { id: string; type: 'start' | 'end'; position: { x: number; y: number }; data: Record<string, never> }
   | { id: string; type: 'tts'; position: { x: number; y: number }; data: TtsNodeData }
   | { id: string; type: 'loop'; position: { x: number; y: number }; data: LoopNodeData }
   | { id: string; type: 'switch'; position: { x: number; y: number }; data: SwitchNodeData }
-  | { id: string; type: 'closing'; position: { x: number; y: number }; data: ClosingNodeData };
+  | { id: string; type: 'closing'; position: { x: number; y: number }; data: ClosingNodeData }
+  | { id: string; type: 'resources'; position: { x: number; y: number }; data: ResourcesNodeData };
 
 export interface ScenarioGraphEdge {
   id: string;
@@ -73,6 +78,7 @@ const CONNECTIONS: Record<ScenarioNodeType, readonly ScenarioNodeType[]> = {
   loop: ['tts', 'loop', 'switch', 'closing', 'end'],
   switch: ['tts', 'loop', 'switch', 'closing', 'end'],
   closing: ['tts', 'loop', 'switch', 'closing', 'end'],
+  resources: ['loop'],
 };
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
@@ -124,6 +130,7 @@ export function parseScenarioGraph(input: unknown, languages?: ScenarioLanguage[
   }
   assertTopicsReachEnd(nodes, edges);
   assertClosingRoutes(nodes, edges);
+  assertResourceLinks(nodes, edges);
 
   nodes.sort((left, right) => left.id.localeCompare(right.id));
   edges.sort((left, right) => left.id.localeCompare(right.id));
@@ -146,7 +153,7 @@ function parseNode(value: unknown, languages?: ScenarioLanguage[]): ScenarioGrap
   if (typeof node.id !== 'string' || !ID_PATTERN.test(node.id)) {
     throw new BadRequestException('A scenario step has an invalid id.');
   }
-  if (node.type !== 'start' && node.type !== 'end' && node.type !== 'tts' && node.type !== 'loop' && node.type !== 'switch' && node.type !== 'closing') {
+  if (node.type !== 'start' && node.type !== 'end' && node.type !== 'tts' && node.type !== 'loop' && node.type !== 'switch' && node.type !== 'closing' && node.type !== 'resources') {
     throw new BadRequestException('A scenario step has an unknown type.');
   }
   const position = parsePosition(node.position);
@@ -161,6 +168,9 @@ function parseNode(value: unknown, languages?: ScenarioLanguage[]): ScenarioGrap
   }
   if (node.type === 'closing') {
     return { id: node.id, type: node.type, position, data: parseClosingData(node.data, languages) };
+  }
+  if (node.type === 'resources') {
+    return { id: node.id, type: node.type, position, data: parseResourcesData(node.data) };
   }
   return { id: node.id, type: node.type, position, data: {} };
 }
@@ -181,6 +191,22 @@ function isCoordinate(value: unknown): value is number {
 }
 
 const MODEL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function parseResourcesData(value: unknown): ResourcesNodeData {
+  const data = value && typeof value === 'object' && !Array.isArray(value) ? (value as { resourceIds?: unknown }) : {};
+  if (data.resourceIds === undefined) return { resourceIds: [] };
+  if (!Array.isArray(data.resourceIds) || data.resourceIds.length > 80) {
+    throw new BadRequestException('Choose at most 80 resources.');
+  }
+  const resourceIds: string[] = [];
+  for (const id of data.resourceIds) {
+    if (typeof id !== 'string' || !MODEL_ID.test(id)) {
+      throw new BadRequestException('A chosen resource is invalid.');
+    }
+    if (!resourceIds.includes(id)) resourceIds.push(id);
+  }
+  return { resourceIds };
+}
 
 function parseLoopData(value: unknown, languages?: ScenarioLanguage[]): LoopNodeData {
   const data = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
@@ -364,6 +390,21 @@ function parseTopic(value: unknown): SwitchTopic {
   return { id: topic.id, description, isDefault };
 }
 
+function assertResourceLinks(nodes: ScenarioGraphNode[], edges: ScenarioGraphEdge[]) {
+  const used = new Map<string, number>();
+  for (const node of nodes) {
+    if (node.type !== 'resources') continue;
+    const outgoing = edges.filter((edge) => edge.source === node.id);
+    if (outgoing.length > 1) {
+      throw new BadRequestException('A Resources block connects to one conversational loop.');
+    }
+    if (outgoing.length === 1) used.set(outgoing[0].target, (used.get(outgoing[0].target) ?? 0) + 1);
+  }
+  for (const count of used.values()) {
+    if (count > 1) throw new BadRequestException('A conversational loop can have one Resources block.');
+  }
+}
+
 function assertClosingRoutes(nodes: ScenarioGraphNode[], edges: ScenarioGraphEdge[]) {
   for (const node of nodes) {
     if (node.type !== 'closing') continue;
@@ -432,6 +473,9 @@ function parseEdge(value: unknown, nodes: ScenarioGraphNode[]): ScenarioGraphEdg
     throw new BadRequestException('A connection points at a missing step.');
   }
   if (!CONNECTIONS[source.type].includes(target.type)) {
+    if (source.type === 'resources') {
+      throw new BadRequestException('Connect a Resources block to one conversational loop.');
+    }
     throw new BadRequestException('Connect Start to Text to speech, Conversational loop, or Closing, then continue through to End.');
   }
   let sourceHandle: string | undefined;
