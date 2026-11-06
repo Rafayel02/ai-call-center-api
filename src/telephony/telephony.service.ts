@@ -18,6 +18,7 @@ import { GeminiRealtime } from './gemini-realtime';
 import { OpenAiRealtime } from './openai-realtime';
 import { ScenarioVoice } from './scenario-voice';
 import { RealtimeTools, SEARCH_TOOL, withVoiceTimeout } from './realtime-tools';
+import { ResourcesService } from '../organizations/resources.service';
 import { KnowledgeService } from '../scenarios/knowledge.service';
 import { briefFromParts, promptBrief, readVoiceMode, readVoicePrompt, realtimeBrief, VoiceMode } from './realtime-brief';
 import { VoicePrompts, readVoicePrompts, voicePromptFor } from '../scenarios/voice-context';
@@ -70,6 +71,7 @@ export class TelephonyService {
     private readonly executions: ScenarioExecutionsService,
     private readonly config: ConfigService,
     private readonly knowledge: KnowledgeService,
+    private readonly resources: ResourcesService,
   ) {}
 
   async answer(input: { origin: string; path: string; params: Record<string, string>; signature: string | undefined }) {
@@ -393,11 +395,17 @@ export class TelephonyService {
 
   private async scenarioTools(graph: ScenarioGraph, language: ScenarioLanguage, scenarioId: unknown, trace: (event: Record<string, unknown>) => void) {
     const search = await this.knowledgeSearch(scenarioId);
-    const scenario = await this.prisma.scenario.findUnique({ where: { id: String(scenarioId) }, select: { languageModels: true } });
+    const scenario = await this.prisma.scenario.findUnique({ where: { id: String(scenarioId) }, select: { languageModels: true, organizationId: true } });
     const voice = languageModelsFor([language], scenario?.languageModels, false)[language];
     if (graph.nodes.some((node) => node.type === 'loop' && node.data.replyMode === 'llm') && !voice?.llmModelId) throw new Error('Choose the language LLM under Models before starting this scenario.');
     return new ScenarioVoice(graph, language, {
-      search,
+      search: async (query, resourceIds) => {
+        if (resourceIds && resourceIds.length > 0) {
+          if (!scenario?.organizationId) throw new Error('Scenario not found.');
+          return this.resources.passages(scenario.organizationId, resourceIds, query);
+        }
+        return search(query);
+      },
       reply: (query, instructions, passages) => {
         if (!voice?.llmModelId) throw new Error('Choose a language LLM for this step.');
         return this.llm.voiceReply(voice.llmModelId, language, query, instructions, passages);

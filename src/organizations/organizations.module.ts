@@ -9,6 +9,6 @@ import { ResourcesService } from './resources.service';
   imports: [LlmModule],
   controllers: [OrganizationsController, ResourcesController],
   providers: [OrganizationsService, ResourcesService],
-  exports: [OrganizationsService],
+  exports: [OrganizationsService, ResourcesService],
 })
 export class OrganizationsModule {}

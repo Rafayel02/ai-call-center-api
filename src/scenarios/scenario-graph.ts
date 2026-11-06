@@ -83,6 +83,19 @@ const CONNECTIONS: Record<ScenarioNodeType, readonly ScenarioNodeType[]> = {
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
 
+export function loopResourceIds(graph: ScenarioGraph, loopId: string) {
+  const ids: string[] = [];
+  for (const edge of graph.edges) {
+    if (edge.target !== loopId) continue;
+    const source = graph.nodes.find((node) => node.id === edge.source);
+    if (source?.type !== 'resources') continue;
+    for (const id of source.data.resourceIds) {
+      if (!ids.includes(id)) ids.push(id);
+    }
+  }
+  return ids;
+}
+
 export function emptyScenarioGraph(): ScenarioGraph {
   return { nodes: [], edges: [] };
 }

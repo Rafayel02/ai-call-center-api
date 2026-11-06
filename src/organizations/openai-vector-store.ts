@@ -55,6 +55,42 @@ export async function deleteOpenAiFile(apiKey: string, vectorStoreId: string, fi
   });
 }
 
+export async function searchOpenAiVectorStore(apiKey: string, vectorStoreId: string, query: string, fileIds: string[]) {
+  const payload = await openAiRequest(apiKey, `/vector_stores/${encodeURIComponent(vectorStoreId)}/search`, {
+    method: 'POST',
+    body: JSON.stringify({
+      query,
+      max_num_results: 8,
+      filters: { type: 'in', key: 'file_id', value: fileIds },
+    }),
+  });
+  return readSearchHits(payload);
+}
+
+export function readSearchHits(payload: unknown) {
+  const data = payload && typeof payload === 'object' && 'data' in payload ? (payload as { data?: unknown }).data : [];
+  if (!Array.isArray(data)) return [];
+  const hits: Array<{ filename: string; text: string }> = [];
+  for (const item of data) {
+    if (!item || typeof item !== 'object') continue;
+    const row = item as { filename?: unknown; content?: unknown };
+    const filename = typeof row.filename === 'string' && row.filename.trim() ? row.filename.trim() : 'file';
+    const parts = Array.isArray(row.content) ? row.content : [];
+    const text = parts
+      .map((part) => (part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string' ? (part as { text: string }).text : ''))
+      .join('\n')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (text) hits.push({ filename, text: text.slice(0, 1200) });
+  }
+  return hits.slice(0, 6);
+}
+
+export function formatSearchHits(hits: Array<{ filename: string; text: string }>) {
+  if (hits.length === 0) return '';
+  return hits.map((hit) => `[${hit.filename}]\n${hit.text}`).join('\n\n').slice(0, 6000);
+}
+
 export async function deleteOpenAiVectorStore(apiKey: string, vectorStoreId: string) {
   await openAiRequest(apiKey, `/vector_stores/${encodeURIComponent(vectorStoreId)}`, { method: 'DELETE' }).catch((error: unknown) => {
     if (error instanceof OpenAiRequestError && error.status === 404) return null;
@@ -86,5 +122,5 @@ async function openAiRequest(apiKey: string, path: string, init: { method?: stri
     const message = typeof payload.error?.message === 'string' && payload.error.message.trim() ? payload.error.message.trim() : 'OpenAI could not index the file.';
     throw new OpenAiRequestError(message, response.status);
   }
-  return payload;
+  return payload as Record<string, unknown>;
 }

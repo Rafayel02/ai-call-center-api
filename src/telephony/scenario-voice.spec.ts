@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseScenarioGraph } from '../scenarios/scenario-graph';
-import { ScenarioVoice } from './scenario-voice';
+import { isSocialTurn, ScenarioVoice } from './scenario-voice';
 
 function fixture(policy = 'required', replyMode = 'realtime') {
   return parseScenarioGraph({ nodes: [
@@ -81,4 +81,45 @@ test('loop limits and graph policy validation are enforced', async () => {
   assert.throws(() => fixture('required', 'invented'));
   const graph = fixture(); graph.edges = graph.edges.filter((edge) => edge.source !== 'start');
   assert.throws(() => new ScenarioVoice(graph, 'en', { search: async () => '', reply: async () => '', trace: () => {} }));
+});
+
+function resourced() {
+  return parseScenarioGraph({
+    nodes: [
+      { id: 'start', type: 'start', position: { x: 0, y: 0 }, data: {} },
+      { id: 'loop-1', type: 'loop', position: { x: 0, y: 0 }, data: { knowledgeSearch: 'off', replyMode: 'realtime' } },
+      { id: 'resources-1', type: 'resources', position: { x: 0, y: 40 }, data: { resourceIds: ['22222222-2222-4222-8222-222222222222'] } },
+      { id: 'end', type: 'end', position: { x: 80, y: 0 }, data: {} },
+    ],
+    edges: [
+      { id: 'e-start', source: 'start', target: 'loop-1' },
+      { id: 'e-loop', source: 'loop-1', target: 'end' },
+      { id: 'e-res', source: 'resources-1', target: 'loop-1' },
+    ],
+  });
+}
+
+test('a connected resource lets the loop answer a real question', async () => {
+  const calls: string[] = [];
+  const flow = new ScenarioVoice(resourced(), 'en', {
+    search: async (query, resourceIds) => {
+      calls.push(`${query}:${resourceIds?.join(',') ?? ''}`);
+      return '[cosmoe.md]\nCosmoe is a clinic in Yerevan.';
+    },
+    reply: async (_query, instructions, passages) => {
+      calls.push('reply');
+      assert.match(instructions, /connected files/);
+      assert.match(passages ?? '', /Cosmoe/);
+      return 'Cosmoe is a clinic in Yerevan.';
+    },
+    trace: () => {},
+  });
+  const hello = await flow.execute('run_step', { nodeId: 'loop-1', revision: 0, query: 'Hello' }) as { status: string };
+  assert.equal(hello.status, 'clarify');
+  const result = await flow.execute('run_step', { nodeId: 'loop-1', revision: 0, query: 'What is Cosmoe?' }) as { status: string; reply: string };
+  assert.equal(result.status, 'ok');
+  assert.match(result.reply, /Cosmoe/);
+  assert.deepEqual(calls, ['What is Cosmoe?:22222222-2222-4222-8222-222222222222', 'reply']);
+  assert.equal(isSocialTurn('thanks'), true);
+  assert.equal(isSocialTurn('What is Cosmoe?'), false);
 });

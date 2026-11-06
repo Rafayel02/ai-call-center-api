@@ -13,8 +13,10 @@ import {
   createOpenAiVectorStore,
   deleteOpenAiFile,
   deleteOpenAiVectorStore,
+  formatSearchHits,
   OpenAiRequestError,
   readOpenAiFile,
+  searchOpenAiVectorStore,
   uploadOpenAiFile,
 } from './openai-vector-store';
 
@@ -40,6 +42,33 @@ export class ResourcesService {
     private readonly prisma: PrismaService,
     private readonly llm: LlmService,
   ) {}
+
+  async passages(organizationId: string, resourceIds: string[], query: string) {
+    const trimmed = query.trim().slice(0, 1000);
+    if (!trimmed || resourceIds.length === 0) return 'No passage matches this question.';
+    const organization = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { openaiVectorStoreId: true },
+    });
+    if (!organization?.openaiVectorStoreId) return 'No passage matches this question.';
+    const files = await this.prisma.organizationResource.findMany({
+      where: { organizationId, id: { in: resourceIds }, status: ResourceStatus.READY },
+      select: { openaiFileId: true },
+    });
+    if (files.length === 0) return 'No passage matches this question.';
+    try {
+      const hits = await searchOpenAiVectorStore(
+        await this.key(),
+        organization.openaiVectorStoreId,
+        trimmed,
+        files.map((file) => file.openaiFileId),
+      );
+      return formatSearchHits(hits) || 'No passage matches this question.';
+    } catch (error) {
+      this.logger.warn(`Resource search failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+      throw error;
+    }
+  }
 
   async list(organizationId: string) {
     const organization = await this.prisma.organization.findUnique({
