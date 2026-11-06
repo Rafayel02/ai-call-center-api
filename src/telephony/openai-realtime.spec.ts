@@ -72,3 +72,23 @@ test('a drafted file answer is spoken even after a playback echo', async () => {
   assert.match(spoken?.response.instructions, /10 GB/);
   voice.close();
 });
+
+test('playback echo does not cancel a file answer that has started', async () => {
+  const socket = new Socket();
+  let cleared = 0;
+  let release!: (value: unknown) => void;
+  const voice = new OpenAiRealtime('test', 'gpt-realtime-2', 'pcm', '', '', { onAudio: () => {}, onClear: () => { cleared += 1; } }, {
+    definitions: [SEARCH_TOOL], execute: () => new Promise((resolve) => { release = resolve; }),
+  }, () => socket as unknown as WebSocket);
+  socket.emit('open');
+  assert.equal(socket.sent[0].session.audio.input.turn_detection.interrupt_response, false);
+  socket.take({ type: 'response.done', response: { status: 'completed', output: [{ type: 'function_call', call_id: 'slow', name: 'search_knowledge', arguments: '{"query":"Cosmo package"}' }] } });
+  await tick();
+  release({ status: 'ok', reply: 'The Cosmo package includes 10 GB.' });
+  await tick();
+  const before = socket.sent.length;
+  socket.take({ type: 'input_audio_buffer.speech_started' });
+  assert.equal(cleared, 0);
+  assert.ok(!socket.sent.slice(before).some((event) => event.type === 'response.cancel'));
+  voice.close();
+});

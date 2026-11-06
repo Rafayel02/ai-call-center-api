@@ -410,7 +410,14 @@ export class TelephonyService {
         if (!voice?.llmModelId) throw new Error('Choose a language LLM for this step.');
         return this.llm.voiceReply(voice.llmModelId, language, query, instructions, passages);
       },
-      trace: (event) => { this.logger.log(`Voice workflow ${String(event.type)} on ${String(event.nodeId)}`); trace(event); },
+      trace: (event) => {
+        const detail = ['status', 'query', 'reply'].flatMap((key) => {
+          const value = event[key];
+          return typeof value === 'string' && value ? [value.replace(/\s+/g, ' ').slice(0, 180)] : [];
+        }).join(' | ');
+        this.logger.log(`Voice workflow ${String(event.type)} on ${String(event.nodeId)}${detail ? `: ${detail}` : ''}`);
+        trace(event);
+      },
     });
   }
 

@@ -24,6 +24,8 @@ export class OpenAiRealtime {
   private responseActive = false;
   private responsePending = false;
   private pendingSpeech = '';
+  /** Ignore speaker echo until the file answer has had time to play out. */
+  private replyUntil = 0;
   private finish: ((ready: boolean) => void) | null = null;
 
   constructor(
@@ -78,7 +80,7 @@ export class OpenAiRealtime {
           audio: {
             input: {
               format: audioFormat,
-              turn_detection: { type: 'server_vad' },
+              turn_detection: { type: 'server_vad', interrupt_response: false },
             },
             output: { format: audioFormat, voice: 'marin' },
           },
@@ -108,6 +110,7 @@ export class OpenAiRealtime {
       );
     }
     if (event.type === 'input_audio_buffer.speech_started') {
+      if (Date.now() < this.replyUntil) return;
       this.turn += 1;
       this.responsePending = false;
       this.handlers.onClear();
@@ -135,7 +138,7 @@ export class OpenAiRealtime {
     }
     if (event.type === 'error') {
       const message = typeof event.error?.message === 'string' ? event.error.message : '';
-      if (/no active response|cancellation failed/i.test(message)) return;
+      if (/no active response|cancellation failed|active response/i.test(message)) return;
       this.handlers.onError?.(message || 'OpenAI could not continue the call.');
     }
   }
@@ -176,6 +179,7 @@ export class OpenAiRealtime {
     this.responseActive = true;
     const say = this.pendingSpeech;
     this.pendingSpeech = '';
+    if (say) this.replyUntil = Date.now() + 12000;
     this.socket.send(JSON.stringify(say
       ? { type: 'response.create', response: { instructions: `Say this to the caller now. Do not add facts:\n${say}` } }
       : { type: 'response.create' }));

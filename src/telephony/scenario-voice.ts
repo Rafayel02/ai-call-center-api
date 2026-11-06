@@ -8,6 +8,13 @@ export function isSocialTurn(query: string) {
   return SOCIAL_TURN.test(query.trim());
 }
 
+/** A speakable fallback when the language model does not return a sentence. */
+export function spokenFromPassages(passages: string) {
+  const text = passages.replace(/\[[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim();
+  const sentences = text.split(/(?<=[.!?])\s+/).slice(0, 3).join(' ');
+  return (sentences || text).slice(0, 500);
+}
+
 export interface ScenarioVoiceDeps {
   search(query: string, resourceIds?: string[]): Promise<string>;
   reply(query: string, instructions: string, passages: string | null): Promise<string>;
@@ -129,8 +136,9 @@ export class ScenarioVoice implements RealtimeTools {
           if (resourceIds.length === 0) throw error;
         }
       }
+      if (resourceIds.length > 0 && !reply && passages) reply = spokenFromPassages(passages);
       if (resourceIds.length > 0) this.resourceAnswered = true;
-      this.trace('step.completed', { replyMode: resourceIds.length > 0 ? 'resources' : (data.replyMode ?? 'realtime') });
+      this.trace('step.completed', { replyMode: resourceIds.length > 0 ? 'resources' : (data.replyMode ?? 'realtime'), reply });
       return { status: 'ok', passages, reply, state: this.state() };
     } catch {
       this.trace('step.failed');
