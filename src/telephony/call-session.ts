@@ -305,14 +305,18 @@ export class PhoneScenarioSession {
         this.messages.push({ role: 'user', content: text.trim() });
       }
       const resourceIds = loopResourceIds(this.graph, node.id);
-      let spokeFile = false;
       if (resourceIds.length > 0 && text.trim() && this.deps.answerFromFiles) {
         const reply = (await this.deps.answerFromFiles(text.trim(), resourceIds, this.language))?.trim() ?? '';
+        this.cutPlayback();
+        await delay.catch(() => undefined);
         if (reply) {
           await this.speak(ttsModelId, reply, node.id, 'reply');
           this.messages.push({ role: 'assistant', content: reply });
-          spokeFile = true;
         }
+        this.inquiry = text.trim();
+        turns += 1;
+        if (turns >= maxTurns) return true;
+        continue;
       }
       turns += 1;
       const topics = this.topicsAhead(node.id);
@@ -328,7 +332,6 @@ export class PhoneScenarioSession {
       try {
         for await (const sentence of streamed.sentences) {
           if (this.closed) return false;
-          if (spokeFile) continue;
           const line = sentence.trim();
           if (!line) continue;
           if (!spoke) {
@@ -347,8 +350,8 @@ export class PhoneScenarioSession {
         await delay.catch(() => undefined);
       }
       const turn = await streamed.turn;
-      if (!spokeFile && !spoke && turn.reply.trim()) await this.speak(ttsModelId, turn.reply, node.id, 'reply');
-      if (!spokeFile && turn.reply.trim()) this.messages.push({ role: 'assistant', content: turn.reply });
+      if (!spoke && turn.reply.trim()) await this.speak(ttsModelId, turn.reply, node.id, 'reply');
+      if (turn.reply.trim()) this.messages.push({ role: 'assistant', content: turn.reply });
       if (turn.phase === 'accepted' && turn.inquiry) {
         this.inquiry = turn.inquiry;
         this.topicId = turn.topicId;
