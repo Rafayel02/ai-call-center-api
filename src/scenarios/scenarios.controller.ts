@@ -4,6 +4,7 @@ import { AuthUser, CurrentUser } from '../common/decorators/current-user.decorat
 import { AddScenarioLanguageDto } from './dto/add-scenario-language.dto';
 import { AddContextSourceDto, LearnContextDto } from './dto/context-source.dto';
 import { CreateScenarioDto } from './dto/create-scenario.dto';
+import { FileAnswerDto } from './dto/file-answer.dto';
 import { SaveScenarioGraphDto } from './dto/save-scenario-graph.dto';
 import { AttachPhoneNumberDto } from './dto/attach-phone-number.dto';
 import { SetScenarioActiveDto } from './dto/set-scenario-active.dto';
@@ -42,6 +43,11 @@ export class ScenariosController {
   @Patch(':id/active')
   setActive(@Param('id', ParseUUIDPipe) id: string, @Body() dto: SetScenarioActiveDto) {
     return this.scenarios.setActive(id, dto.active);
+  }
+
+  @Post(':id/file-answer')
+  fileAnswer(@Param('id', ParseUUIDPipe) id: string, @Body() dto: FileAnswerDto) {
+    return this.scenarios.fileAnswer(id, dto);
   }
 
   @Patch(':id')

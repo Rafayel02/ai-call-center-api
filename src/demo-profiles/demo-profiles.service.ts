@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, Logger, NotFoundExc
 import { Prisma } from '@prisma/client';
 import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
-import { readVoiceMode, readVoicePrompt } from '../telephony/realtime-brief';
+import { readSpeechEngine, readVoiceMode, readVoicePrompt } from '../telephony/realtime-brief';
 import { readVoicePrompts } from '../scenarios/voice-context';
 import { readRealtimeModel } from '../telephony/realtime-models';
 import { DEMO_LANGUAGES, DemoLanguage, SaveDemoProfileDto, StartDemoSessionDto } from './dto/save-demo-profile.dto';
@@ -20,7 +20,7 @@ const profileSelect = {
   copy: true,
   createdAt: true,
   updatedAt: true,
-  scenario: { select: { id: true, name: true, languages: true, languageModels: true, realtimeModel: true, voiceMode: true, voicePrompt: true, voicePrompts: true } },
+  scenario: { select: { id: true, name: true, languages: true, languageModels: true, realtimeModel: true, speechEngine: true, voiceMode: true, voicePrompt: true, voicePrompts: true } },
 } satisfies Prisma.DemoProfileSelect;
 
 type ProfileRow = Prisma.DemoProfileGetPayload<{ select: typeof profileSelect }>;
@@ -147,6 +147,7 @@ export class DemoProfilesService implements OnModuleInit {
       languages: scenario.languages,
       languageModels: voices,
       realtimeModel: readRealtimeModel(scenario.realtimeModel),
+      speechEngine: readSpeechEngine(scenario.speechEngine),
       voiceMode: readVoiceMode(scenario.voiceMode),
       voicePrompt: readVoicePrompt(scenario.voicePrompt),
       voicePrompts: readVoicePrompts(scenario.voicePrompts, scenario.voicePrompt),

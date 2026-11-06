@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from '@nes
 import { Prisma, ResourceStatus } from '@prisma/client';
 import { LlmService } from '../llm/llm.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { isSocialTurn, spokenFromPassages } from '../telephony/scenario-voice';
 import { pageIdentity } from '../scenarios/site-pages';
 import { publicUrl } from '../scenarios/voice-sources';
 import { decodeResource, resourceFileName, type IndexState } from './organization-resources';
@@ -67,6 +68,21 @@ export class ResourcesService {
     } catch (error) {
       this.logger.warn(`Resource search failed: ${error instanceof Error ? error.message : 'unknown error'}`);
       throw error;
+    }
+  }
+
+  /** A spoken sentence from the selected files. Social turns return null so the call can keep listening. */
+  async spokenAnswer(organizationId: string, resourceIds: string[], query: string, llmModelId: string, languageName: string) {
+    const trimmed = query.trim();
+    if (!trimmed || !llmModelId || resourceIds.length === 0 || isSocialTurn(trimmed)) return null;
+    const passages = await this.passages(organizationId, resourceIds, trimmed);
+    const instructions = 'Answer from the connected files. Include the concrete details they contain, such as what the package includes, the price, or the conditions. If the passages do not mention the subject, say that information is not in the files.';
+    try {
+      const reply = (await this.llm.voiceReply(llmModelId, languageName, trimmed, instructions, passages)).trim();
+      return reply || null;
+    } catch {
+      if (!passages || passages === 'No passage matches this question.') return null;
+      return spokenFromPassages(passages);
     }
   }
 

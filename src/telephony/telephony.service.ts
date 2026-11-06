@@ -20,11 +20,11 @@ import { ScenarioVoice } from './scenario-voice';
 import { RealtimeTools, SEARCH_TOOL, withVoiceTimeout } from './realtime-tools';
 import { ResourcesService } from '../organizations/resources.service';
 import { KnowledgeService } from '../scenarios/knowledge.service';
-import { briefFromParts, promptBrief, readVoiceMode, readVoicePrompt, realtimeBrief, VoiceMode } from './realtime-brief';
+import { briefFromParts, promptBrief, readSpeechEngine, readVoiceMode, readVoicePrompt, realtimeBrief, SpeechEngine, VoiceMode } from './realtime-brief';
 import { VoicePrompts, readVoicePrompts, voicePromptFor } from '../scenarios/voice-context';
 import { isGeminiLiveModel, readRealtimeModel } from './realtime-models';
 import { isTwilioSignature } from './twilio-signature';
-import { ScenarioLanguage, ScenarioLanguageModels, isScenarioLanguage, languageKeyLine, languageModelsFor } from '../scenarios/scenario-languages';
+import { LANGUAGE_NAME, ScenarioLanguage, ScenarioLanguageModels, isScenarioLanguage, languageKeyLine, languageModelsFor } from '../scenarios/scenario-languages';
 import { decodeUlaw, pcmWav } from './ulaw';
 import { hangupTwiml, sayTwiml, streamTwiml } from './twiml';
 
@@ -50,6 +50,7 @@ interface PendingCall {
   scenarioId: string;
   startedById: string;
   realtimeModel: string;
+  speechEngine: SpeechEngine;
   voiceMode: VoiceMode;
   voicePrompt: string;
   voicePrompts: VoicePrompts;
@@ -146,7 +147,11 @@ export class TelephonyService {
     const gemini = isGeminiLiveModel(pending.realtimeModel);
     const apiKey = await this.llm.realtimeKey(gemini ? LlmProvider.GEMINI : LlmProvider.OPENAI);
     try {
-      if (apiKey) {
+      if (pending.speechEngine === 'pipeline') {
+        socket.on('message', (data) => session.receive(String(data)));
+        await session.run();
+        await log.finish(session.outcome().reachedEnd ? ExecutionStatus.FINISHED : ExecutionStatus.STOPPED);
+      } else if (apiKey) {
         const ready = await this.speakLive(socket, session, pending, log, apiKey);
         await log.finish(ready ? ExecutionStatus.FINISHED : ExecutionStatus.FAILED, ready ? undefined : 'The live voice did not start.');
       } else {
@@ -204,7 +209,7 @@ export class TelephonyService {
         }
         if (pending.abandon) clearTimeout(pending.abandon);
         this.pending.delete(callId);
-        const session = new PhoneScenarioSession(socket, pending.graph, this.deps(), silentLog, pending.languages, pending.languageModels, pending.askLanguage, pending.chosenLanguage);
+        const session = new PhoneScenarioSession(socket, pending.graph, this.deps(pending), silentLog, pending.languages, pending.languageModels, pending.askLanguage, pending.chosenLanguage);
         session.receive(String(data));
         resolve({ session, pending });
       };
@@ -463,6 +468,7 @@ export class TelephonyService {
       scenarioId: scenario.id,
       startedById: scenario.startedById,
       realtimeModel: scenario.realtimeModel,
+      speechEngine: scenario.speechEngine,
       voiceMode: scenario.voiceMode,
       voicePrompt: scenario.voicePrompt,
       voicePrompts: scenario.voicePrompts,
@@ -518,7 +524,7 @@ export class TelephonyService {
     }
   }
 
-  private deps(): CallDeps {
+  private deps(pending: PendingCall): CallDeps {
     return {
       speak: (modelId, text, execution) => this.speech.speakPhone(modelId, text, execution),
       speakStream: (modelId, text, execution, onChunk) => this.speech.speakPhoneStream(modelId, text, execution, onChunk),
@@ -543,6 +549,12 @@ export class TelephonyService {
         const result = await this.llm.judgeClosing(modelId, { question, answer }, execution);
         return result.outcome;
       },
+      answerFromFiles: async (query, resourceIds, language) => {
+        const scenario = await this.prisma.scenario.findUnique({ where: { id: pending.scenarioId }, select: { organizationId: true } });
+        const llmModelId = pending.languageModels[language]?.llmModelId;
+        if (!scenario || !llmModelId) return null;
+        return this.resources.spokenAnswer(scenario.organizationId, resourceIds, query, llmModelId, LANGUAGE_NAME[language]);
+      },
       onDigit: (digit) => this.logger.log(`Phone digit ${digit}`),
     };
   }
@@ -550,7 +562,7 @@ export class TelephonyService {
   private async publishedScenario(to: string) {
     const number = await this.prisma.phoneNumber.findUnique({
       where: { e164: to },
-      select: { scenario: { select: { id: true, active: true, graph: true, languages: true, languageModels: true, askLanguage: true, realtimeModel: true, voiceMode: true, voicePrompt: true, voicePrompts: true, createdById: true } } },
+      select: { scenario: { select: { id: true, active: true, graph: true, languages: true, languageModels: true, askLanguage: true, realtimeModel: true, speechEngine: true, voiceMode: true, voicePrompt: true, voicePrompts: true, createdById: true } } },
     });
     if (!number?.scenario?.active) return null;
     const languages = number.scenario.languages.filter(isScenarioLanguage);
@@ -561,6 +573,7 @@ export class TelephonyService {
       languageModels: languageModelsFor(languages, number.scenario.languageModels, false),
       askLanguage: number.scenario.askLanguage,
       realtimeModel: readRealtimeModel(number.scenario.realtimeModel),
+      speechEngine: readSpeechEngine(number.scenario.speechEngine),
       voiceMode: readVoiceMode(number.scenario.voiceMode),
       voicePrompt: readVoicePrompt(number.scenario.voicePrompt),
       voicePrompts: readVoicePrompts(number.scenario.voicePrompts, number.scenario.voicePrompt),

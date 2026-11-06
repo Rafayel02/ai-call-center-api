@@ -7,7 +7,8 @@ import { CreateScenarioDto } from './dto/create-scenario.dto';
 import { SaveScenarioGraphDto } from './dto/save-scenario-graph.dto';
 import { emptyScenarioGraph, parseScenarioGraph, readScenarioGraph } from './scenario-graph';
 import { LANGUAGE_NAME, ScenarioLanguage, applyTranslations, clearGraphModels, detectScript, emptyVoice, isScenarioLanguage, languageModelsFor, modelsOnGraph, spokenSample, spokenSlots, stampLanguage } from './scenario-languages';
-import { readVoiceMode, readVoicePrompt } from '../telephony/realtime-brief';
+import { readSpeechEngine, readVoiceMode, readVoicePrompt } from '../telephony/realtime-brief';
+import { ResourcesService } from '../organizations/resources.service';
 import { KnowledgeService } from './knowledge.service';
 import { SOURCE_LIMIT, SOURCE_TEXT_LIMIT, VoiceSource, publicVoiceSource, readTranslatedPrompt, readVoicePrompts, readVoiceSources, translateSystem } from './voice-context';
 import { PAGE_TEXT_LIMIT, THIN_SITE_PAGES, pageIdentity, siteHost } from './site-pages';
@@ -22,6 +23,7 @@ const scenarioSummary = {
   languages: true,
   askLanguage: true,
   realtimeModel: true,
+  speechEngine: true,
   voiceMode: true,
   active: true,
   createdAt: true,
@@ -37,6 +39,7 @@ export class ScenariosService implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly llm: LlmService,
     private readonly knowledge: KnowledgeService,
+    private readonly resources: ResourcesService,
   ) {}
 
   async onModuleInit() {
@@ -210,6 +213,7 @@ export class ScenariosService implements OnModuleInit {
           ...(languageModels ? { languageModels: languageModels as unknown as Prisma.InputJsonValue } : {}),
           ...(dto.askLanguage === undefined ? {} : { askLanguage: dto.askLanguage }),
           ...(dto.realtimeModel === undefined ? {} : { realtimeModel: dto.realtimeModel }),
+          ...(dto.speechEngine === undefined ? {} : { speechEngine: readSpeechEngine(dto.speechEngine) }),
           ...(dto.voiceMode === undefined ? {} : { voiceMode: dto.voiceMode }),
           ...(prompts ? { voicePrompts: prompts as unknown as Prisma.InputJsonValue, voicePrompt: prompts.hy } : dto.voicePrompt === undefined ? {} : { voicePrompt: dto.voicePrompt.trim() }),
         },
@@ -222,6 +226,25 @@ export class ScenariosService implements OnModuleInit {
       }
       throw error;
     }
+  }
+
+  async fileAnswer(id: string, input: { query: string; resourceIds: string[]; language: string }) {
+    if (!isScenarioLanguage(input.language)) throw new BadRequestException('Choose a scenario language.');
+    const scenario = await this.prisma.scenario.findUnique({
+      where: { id },
+      select: { organizationId: true, languages: true, languageModels: true },
+    });
+    if (!scenario) throw new NotFoundException('Scenario not found.');
+    const languages = scenario.languages.filter(isScenarioLanguage);
+    const voice = languageModelsFor(languages, scenario.languageModels, false)[input.language];
+    if (!voice?.llmModelId) throw new BadRequestException('Choose the language LLM before answering from files.');
+    const resourceIds = [...new Set(input.resourceIds)];
+    if (resourceIds.length > 0) {
+      const owned = await this.prisma.organizationResource.count({ where: { organizationId: scenario.organizationId, id: { in: resourceIds } } });
+      if (owned !== resourceIds.length) throw new BadRequestException('Choose resources from this organization.');
+    }
+    const reply = await this.resources.spokenAnswer(scenario.organizationId, resourceIds, input.query, voice.llmModelId, LANGUAGE_NAME[input.language]);
+    return { reply };
   }
 
   async addContextSource(id: string, input: { url?: string; name?: string; data?: string }) {
@@ -354,12 +377,13 @@ function sourceMark(sources: VoiceSource[]) {
   return sources.map((source) => `${source.url ?? source.id}\n${source.text}`).join('\n');
 }
 
-function presentScenario<T extends { languages: string[]; languageModels: Prisma.JsonValue; graph: Prisma.JsonValue; realtimeModel: string; voiceMode: string; voicePrompt: string; voicePrompts: Prisma.JsonValue; voiceSources: Prisma.JsonValue }>(scenario: T) {
+function presentScenario<T extends { languages: string[]; languageModels: Prisma.JsonValue; graph: Prisma.JsonValue; realtimeModel: string; speechEngine: string; voiceMode: string; voicePrompt: string; voicePrompts: Prisma.JsonValue; voiceSources: Prisma.JsonValue }>(scenario: T) {
   const languages = scenario.languages.filter(isScenarioLanguage);
   const voicePrompts = readVoicePrompts(scenario.voicePrompts, scenario.voicePrompt);
   return {
     ...scenario,
     realtimeModel: readRealtimeModel(scenario.realtimeModel),
+    speechEngine: readSpeechEngine(scenario.speechEngine),
     voiceMode: readVoiceMode(scenario.voiceMode),
     voicePrompt: voicePrompts.hy || readVoicePrompt(scenario.voicePrompt),
     voicePrompts,

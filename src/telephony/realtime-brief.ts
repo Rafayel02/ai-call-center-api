@@ -33,6 +33,13 @@ export function realtimeBrief(graph: ScenarioGraph, language: ScenarioLanguage) 
   return briefFromParts(language, lines, topics, closing);
 }
 
+export const SPEECH_ENGINES = ['realtime', 'pipeline'] as const;
+export type SpeechEngine = (typeof SPEECH_ENGINES)[number];
+
+export function readSpeechEngine(value: unknown): SpeechEngine {
+  return value === 'pipeline' ? 'pipeline' : 'realtime';
+}
+
 export const VOICE_MODES = ['scenario', 'prompt'] as const;
 export type VoiceMode = (typeof VOICE_MODES)[number];
 export const VOICE_PROMPT_LIMIT = 24_000;

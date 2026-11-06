@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
 import { ExecutionContext, SpokenKind } from '../scenario-executions/execution-context';
-import { ScenarioGraph, ScenarioGraphNode } from '../scenarios/scenario-graph';
+import { loopResourceIds, ScenarioGraph, ScenarioGraphNode } from '../scenarios/scenario-graph';
 import { LANGUAGE_NAME, LanguageVoice, ScenarioLanguage, ScenarioLanguageModels, delayLines, emptyVoice, languageKeyLine, spokenLine } from '../scenarios/scenario-languages';
 import { CallLog } from './call-log';
 import { DtmfDecoder } from './dtmf';
@@ -41,6 +41,7 @@ export interface CallDeps {
     execution: ExecutionContext | null,
   ): { sentences: AsyncIterable<string>; turn: Promise<Turn> };
   judgeClosing(modelId: string, question: string, answer: string, execution: ExecutionContext | null): Promise<'questions' | 'done'>;
+  answerFromFiles?(query: string, resourceIds: string[], language: ScenarioLanguage): Promise<string | null>;
   onDigit?(digit: string): void;
 }
 
@@ -303,6 +304,16 @@ export class PhoneScenarioSession {
         }
         this.messages.push({ role: 'user', content: text.trim() });
       }
+      const resourceIds = loopResourceIds(this.graph, node.id);
+      let spokeFile = false;
+      if (resourceIds.length > 0 && text.trim() && this.deps.answerFromFiles) {
+        const reply = (await this.deps.answerFromFiles(text.trim(), resourceIds, this.language))?.trim() ?? '';
+        if (reply) {
+          await this.speak(ttsModelId, reply, node.id, 'reply');
+          this.messages.push({ role: 'assistant', content: reply });
+          spokeFile = true;
+        }
+      }
       turns += 1;
       const topics = this.topicsAhead(node.id);
       const turnInput = {
@@ -317,6 +328,7 @@ export class PhoneScenarioSession {
       try {
         for await (const sentence of streamed.sentences) {
           if (this.closed) return false;
+          if (spokeFile) continue;
           const line = sentence.trim();
           if (!line) continue;
           if (!spoke) {
@@ -335,8 +347,8 @@ export class PhoneScenarioSession {
         await delay.catch(() => undefined);
       }
       const turn = await streamed.turn;
-      if (!spoke && turn.reply.trim()) await this.speak(ttsModelId, turn.reply, node.id, 'reply');
-      if (turn.reply.trim()) this.messages.push({ role: 'assistant', content: turn.reply });
+      if (!spokeFile && !spoke && turn.reply.trim()) await this.speak(ttsModelId, turn.reply, node.id, 'reply');
+      if (!spokeFile && turn.reply.trim()) this.messages.push({ role: 'assistant', content: turn.reply });
       if (turn.phase === 'accepted' && turn.inquiry) {
         this.inquiry = turn.inquiry;
         this.topicId = turn.topicId;
