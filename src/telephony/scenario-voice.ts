@@ -26,7 +26,7 @@ export class ScenarioVoice implements RealtimeTools {
   readonly definitions = [
     {
       name: 'run_step',
-      description: 'Run the current conversational step before a factual answer. Include relevant conversation details in query. The server enforces its search and LLM policy. Wait for the result; a brief configured delay line is allowed while working.',
+      description: 'Run the current conversational step before a factual answer. query must be the caller\'s latest question in their own words, with product and package names kept exactly as spoken. Do not replace it with this step\'s goal or a different topic. The server enforces its search and LLM policy. Wait for the result; a brief configured delay line is allowed while working.',
       parameters: { type: 'object', properties: { nodeId: { type: 'string' }, revision: { type: 'integer' }, query: { type: 'string' }, search: { type: 'boolean' } }, required: ['nodeId', 'revision', 'query'], additionalProperties: false },
     },
     {
@@ -84,9 +84,9 @@ export class ScenarioVoice implements RealtimeTools {
       instructions: [
         `You are a live phone receptionist. Speak only ${LANGUAGE_NAME[this.language]}.`,
         'The backend scenario controls the conversation. Follow only the current step returned by tools, never a future step. Do not describe the graph or tools to the caller.',
-        'At a speech step say its line, then call advance_scenario. At a loop, follow its instructions, ask for missing details, and call run_step before every factual answer. Include prior conversation details in the query. Use advance_scenario when the step is complete or its turn limit is reached.',
+        'At a speech step say its line, then call advance_scenario. At a loop, follow its instructions, ask for missing details, and call run_step before every factual answer. Put only the caller\'s latest question in query, keeping names exactly as spoken. Never substitute the step\'s goal or another topic. Use advance_scenario when the step is complete or its turn limit is reached.',
         this.answersFromFiles()
-          ? 'When the current step has answerFromResources, do not name the subject or answer before run_step returns. Call run_step with the question, then say only the returned reply. If the result is no_match, say that information is not in the files. Do not leave the step before that reply has been spoken.'
+          ? 'When the current step has answerFromResources, do not name the subject or answer before run_step returns. Call run_step with the caller\'s exact question, such as a package name they just said, then say only the returned reply. If the result is no_match, say that information is not in the files. Do not leave the step before that reply has been spoken.'
           : '',
         'At a topic switch call advance_scenario with a listed route matching the inquiry, otherwise Default. At Closing say its question, wait for the caller, then follow questions or done. At End say a brief goodbye; do not continue helping.',
         'When work takes time, you may say one brief configured delay line. Never fill the wait with guessed facts. Let the caller interrupt.',

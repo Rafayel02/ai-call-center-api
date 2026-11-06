@@ -26,6 +26,9 @@ export class OpenAiRealtime {
   private pendingSpeech = '';
   /** Ignore speaker echo until the file answer has had time to play out. */
   private replyUntil = 0;
+  private heard = '';
+  private heardSettled = false;
+  private heardReady: (() => void) | null = null;
   private finish: ((ready: boolean) => void) | null = null;
 
   constructor(
@@ -80,6 +83,7 @@ export class OpenAiRealtime {
           audio: {
             input: {
               format: audioFormat,
+              transcription: { model: 'gpt-4o-mini-transcribe', prompt: 'Transcribe the caller exactly. Keep product and package names as spoken.' },
               turn_detection: { type: 'server_vad', interrupt_response: false },
             },
             output: { format: audioFormat, voice: 'marin' },
@@ -92,7 +96,7 @@ export class OpenAiRealtime {
   }
 
   private take(raw: string) {
-    let event: { type?: string; delta?: unknown; response?: { status?: string; output?: Array<{ type?: string; call_id?: string; name?: string; arguments?: string }> }; error?: { message?: unknown } };
+    let event: { type?: string; delta?: unknown; transcript?: unknown; response?: { status?: string; output?: Array<{ type?: string; call_id?: string; name?: string; arguments?: string }> }; error?: { message?: unknown } };
     try {
       event = JSON.parse(raw) as typeof event;
     } catch {
@@ -109,8 +113,15 @@ export class OpenAiRealtime {
         }),
       );
     }
+    if (event.type === 'conversation.item.input_audio_transcription.completed' && Date.now() >= this.replyUntil) {
+      this.heard = typeof event.transcript === 'string' ? event.transcript.trim() : '';
+      this.heardSettled = true;
+      this.heardReady?.();
+    }
     if (event.type === 'input_audio_buffer.speech_started') {
       if (Date.now() < this.replyUntil) return;
+      this.heard = '';
+      this.heardSettled = false;
       this.turn += 1;
       this.responsePending = false;
       this.handlers.onClear();
@@ -155,7 +166,15 @@ export class OpenAiRealtime {
         this.toolCalls.add(call.call_id);
         let output: unknown;
         try {
-          output = turn === this.turn ? await runVoiceTool(tools, call.name, readToolArgs(call.arguments ?? '{}')) : { status: 'interrupted', message: 'The caller has started a new turn. Re-evaluate their request.' };
+          if (turn !== this.turn) output = { status: 'interrupted', message: 'The caller has started a new turn. Re-evaluate their request.' };
+          else {
+            const args = readToolArgs(call.arguments ?? '{}');
+            if (call.name === 'run_step' || call.name === 'search_knowledge') {
+              const heard = await this.callerWords();
+              if (heard) args.query = heard;
+            }
+            output = await runVoiceTool(tools, call.name, args);
+          }
         } catch {
           output = { status: 'invalid_arguments', message: 'Provide valid JSON arguments.' };
         }
@@ -171,6 +190,21 @@ export class OpenAiRealtime {
       this.toolsBusy = false;
       this.flushResponse();
     }
+  }
+
+  private callerWords() {
+    if (this.heardSettled) return Promise.resolve(this.heard);
+    return new Promise<string>((resolve) => {
+      const timer = setTimeout(() => {
+        this.heardReady = null;
+        resolve(this.heard);
+      }, 800);
+      this.heardReady = () => {
+        clearTimeout(timer);
+        this.heardReady = null;
+        resolve(this.heard);
+      };
+    });
   }
 
   private flushResponse() {
