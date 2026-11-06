@@ -29,6 +29,7 @@ export class ScenarioVoice implements RealtimeTools {
     },
   ];
   private current: ScenarioGraphNode;
+  private resourceAnswered = false;
   private revision = 0;
   private transitions = 0;
   private turns = 0;
@@ -78,7 +79,7 @@ export class ScenarioVoice implements RealtimeTools {
         'The backend scenario controls the conversation. Follow only the current step returned by tools, never a future step. Do not describe the graph or tools to the caller.',
         'At a speech step say its line, then call advance_scenario. At a loop, follow its instructions, ask for missing details, and call run_step before every factual answer. Include prior conversation details in the query. Use advance_scenario when the step is complete or its turn limit is reached.',
         this.answersFromFiles()
-          ? 'When the current step has answerFromResources, the caller can ask about those files. Do not search a greeting, thanks, or a request to wait. Once they ask a real question, call run_step and speak the returned reply. Use only that reply for the facts. If the result is no_match, say that information is not in the files.'
+          ? 'When the current step has answerFromResources, do not name the subject or answer before run_step returns. Call run_step with the question, then say only the returned reply. If the result is no_match, say that information is not in the files. Do not leave the step before that reply has been spoken.'
           : '',
         'At a topic switch call advance_scenario with a listed route matching the inquiry, otherwise Default. At Closing say its question, wait for the caller, then follow questions or done. At End say a brief goodbye; do not continue helping.',
         'When work takes time, you may say one brief configured delay line. Never fill the wait with guessed facts. Let the caller interrupt.',
@@ -110,13 +111,14 @@ export class ScenarioVoice implements RealtimeTools {
     try {
       const passages = search ? await withVoiceTimeout(this.deps.search(query, resourceIds.length > 0 ? resourceIds : undefined)) : null;
       if (search && (!passages || passages === 'No passage matches this question.')) {
+        if (resourceIds.length > 0) this.resourceAnswered = true;
         const result = { status: 'no_match', state: this.state() };
         this.trace('knowledge.result', { query, status: 'no_match' });
         return result;
       }
       if (search) this.trace('knowledge.result', { query, status: 'ok', passages });
       const instructions = resourceIds.length > 0
-        ? 'Answer from the connected files in one or two short spoken sentences. If the passages do not contain the answer, say that information is not in the files.'
+        ? 'Answer from the connected files. Include the concrete details they contain, such as what the package includes, the price, or the conditions. If the passages do not mention the subject, say that information is not in the files.'
         : (data.instructions ?? '');
       let reply: string | undefined;
       if (data.replyMode === 'llm' || resourceIds.length > 0) {
@@ -127,6 +129,7 @@ export class ScenarioVoice implements RealtimeTools {
           if (resourceIds.length === 0) throw error;
         }
       }
+      if (resourceIds.length > 0) this.resourceAnswered = true;
       this.trace('step.completed', { replyMode: resourceIds.length > 0 ? 'resources' : (data.replyMode ?? 'realtime') });
       return { status: 'ok', passages, reply, state: this.state() };
     } catch {
@@ -156,6 +159,9 @@ export class ScenarioVoice implements RealtimeTools {
   }
 
   private advance(route: unknown) {
+    if (this.current.type === 'loop' && loopResourceIds(this.graph, this.current.id).length > 0 && !this.resourceAnswered) {
+      return { status: 'answer_first', message: 'Call run_step with the question and speak the returned reply before leaving this step.', state: this.state() };
+    }
     const branches = this.current.type === 'switch' || this.current.type === 'closing';
     const edges = this.graph.edges.filter((edge) => edge.source === this.current.id);
     const edge = branches ? edges.find((item) => item.sourceHandle === route) : edges.length === 1 && (route === undefined || route === '') ? edges[0] : undefined;
@@ -163,6 +169,7 @@ export class ScenarioVoice implements RealtimeTools {
     if (!next || this.transitions >= 100) return { status: 'invalid_transition', state: this.state() };
     this.trace('node.left', { route: edge?.sourceHandle ?? '' });
     this.current = next;
+    this.resourceAnswered = false;
     this.revision += 1;
     this.transitions += 1;
     this.turns = 0;

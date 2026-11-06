@@ -56,3 +56,19 @@ test('interruption retains tool output but does not trigger a stale spoken answe
   assert.ok(!socket.sent.some((event) => event.type === 'response.create'));
   voice.close();
 });
+
+test('a drafted file answer is spoken even after a playback echo', async () => {
+  const socket = new Socket();
+  let release!: (value: unknown) => void;
+  const voice = new OpenAiRealtime('test', 'gpt-realtime-2', 'pcm', '', '', { onAudio: () => {}, onClear: () => {} }, {
+    definitions: [SEARCH_TOOL], execute: () => new Promise((resolve) => { release = resolve; }),
+  }, () => socket as unknown as WebSocket);
+  socket.take({ type: 'response.done', response: { status: 'completed', output: [{ type: 'function_call', call_id: 'slow', name: 'search_knowledge', arguments: '{"query":"Cosmo package"}' }] } });
+  await tick();
+  socket.take({ type: 'input_audio_buffer.speech_started' });
+  release({ status: 'ok', reply: 'The Cosmo package includes 10 GB.' });
+  await tick();
+  const spoken = socket.sent.find((event) => event.type === 'response.create' && event.response?.instructions);
+  assert.match(spoken?.response.instructions, /10 GB/);
+  voice.close();
+});

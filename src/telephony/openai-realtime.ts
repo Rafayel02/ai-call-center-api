@@ -23,6 +23,7 @@ export class OpenAiRealtime {
   private toolQueue: Promise<void> = Promise.resolve();
   private responseActive = false;
   private responsePending = false;
+  private pendingSpeech = '';
   private finish: ((ready: boolean) => void) | null = null;
 
   constructor(
@@ -157,10 +158,12 @@ export class OpenAiRealtime {
         }
         if (this.settled || this.socket.readyState !== WebSocket.OPEN) return;
         outputs += 1;
+        const reply = spokenReply(output);
+        if (reply) this.pendingSpeech = reply;
         this.socket.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: call.call_id, output: JSON.stringify(output) } }));
       }
-      // Keep the result in history, but never start a stale answer over a new caller turn.
-      if (outputs && turn === this.turn) this.responsePending = true;
+      // A file answer must be spoken even if playback echo looked like a new caller turn.
+      if (outputs && (turn === this.turn || this.pendingSpeech)) this.responsePending = true;
     } finally {
       this.toolsBusy = false;
       this.flushResponse();
@@ -171,7 +174,11 @@ export class OpenAiRealtime {
     if (!this.responsePending || this.responseActive || this.toolsBusy || this.socket.readyState !== WebSocket.OPEN) return;
     this.responsePending = false;
     this.responseActive = true;
-    this.socket.send(JSON.stringify({ type: 'response.create' }));
+    const say = this.pendingSpeech;
+    this.pendingSpeech = '';
+    this.socket.send(JSON.stringify(say
+      ? { type: 'response.create', response: { instructions: `Say this to the caller now. Do not add facts:\n${say}` } }
+      : { type: 'response.create' }));
   }
 
   private stop(ready: boolean) {
@@ -180,4 +187,10 @@ export class OpenAiRealtime {
     this.finish?.(ready);
     this.finish = null;
   }
+}
+
+function spokenReply(output: unknown) {
+  if (!output || typeof output !== 'object' || !('reply' in output)) return '';
+  const reply = (output as { reply?: unknown }).reply;
+  return typeof reply === 'string' ? reply.trim() : '';
 }

@@ -114,6 +114,8 @@ test('a connected resource lets the loop answer a real question', async () => {
     },
     trace: () => {},
   });
+  const early = await flow.execute('advance_scenario', { nodeId: 'loop-1', revision: 0 }) as { status: string };
+  assert.equal(early.status, 'answer_first');
   const hello = await flow.execute('run_step', { nodeId: 'loop-1', revision: 0, query: 'Hello' }) as { status: string };
   assert.equal(hello.status, 'clarify');
   const result = await flow.execute('run_step', { nodeId: 'loop-1', revision: 0, query: 'What is Cosmoe?' }) as { status: string; reply: string };

@@ -28,7 +28,8 @@ test('an in-progress OpenAI file stays indexing', () => {
 
 test('search hits keep the file name and the passage', () => {
   const hits = readSearchHits({
-    data: [{ filename: 'cosmoe.md', content: [{ type: 'text', text: 'Cosmoe is a clinic in Yerevan.' }] }],
+    data: [{ file_id: 'file_1', filename: 'cosmoe.md', content: [{ type: 'text', text: 'Cosmoe is a clinic in Yerevan.' }] }],
   });
+  assert.equal(hits[0]?.fileId, 'file_1');
   assert.match(formatSearchHits(hits), /\[cosmoe\.md\]\nCosmoe is a clinic in Yerevan\./);
 });

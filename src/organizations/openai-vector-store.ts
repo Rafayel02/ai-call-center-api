@@ -56,24 +56,34 @@ export async function deleteOpenAiFile(apiKey: string, vectorStoreId: string, fi
 }
 
 export async function searchOpenAiVectorStore(apiKey: string, vectorStoreId: string, query: string, fileIds: string[]) {
-  const payload = await openAiRequest(apiKey, `/vector_stores/${encodeURIComponent(vectorStoreId)}/search`, {
+  const body = { query, max_num_results: 12, rewrite_query: true };
+  try {
+    const filtered = await openAiRequest(apiKey, `/vector_stores/${encodeURIComponent(vectorStoreId)}/search`, {
+      method: 'POST',
+      body: JSON.stringify({ ...body, filters: { type: 'in', key: 'file_id', value: fileIds } }),
+    });
+    const hits = readSearchHits(filtered);
+    const matched = hits.filter((hit) => fileIds.includes(hit.fileId));
+    if (matched.length > 0) return matched;
+    if (hits.length > 0 && hits.every((hit) => !hit.fileId)) return hits;
+  } catch (error) {
+    if (!(error instanceof OpenAiRequestError) || error.status < 400 || error.status >= 500) throw error;
+  }
+  const open = await openAiRequest(apiKey, `/vector_stores/${encodeURIComponent(vectorStoreId)}/search`, {
     method: 'POST',
-    body: JSON.stringify({
-      query,
-      max_num_results: 8,
-      filters: { type: 'in', key: 'file_id', value: fileIds },
-    }),
+    body: JSON.stringify(body),
   });
-  return readSearchHits(payload);
+  return readSearchHits(open).filter((hit) => fileIds.includes(hit.fileId));
 }
 
 export function readSearchHits(payload: unknown) {
   const data = payload && typeof payload === 'object' && 'data' in payload ? (payload as { data?: unknown }).data : [];
   if (!Array.isArray(data)) return [];
-  const hits: Array<{ filename: string; text: string }> = [];
+  const hits: Array<{ fileId: string; filename: string; text: string }> = [];
   for (const item of data) {
     if (!item || typeof item !== 'object') continue;
-    const row = item as { filename?: unknown; content?: unknown };
+    const row = item as { file_id?: unknown; filename?: unknown; content?: unknown };
+    const fileId = typeof row.file_id === 'string' ? row.file_id : '';
     const filename = typeof row.filename === 'string' && row.filename.trim() ? row.filename.trim() : 'file';
     const parts = Array.isArray(row.content) ? row.content : [];
     const text = parts
@@ -81,9 +91,9 @@ export function readSearchHits(payload: unknown) {
       .join('\n')
       .replace(/\s+/g, ' ')
       .trim();
-    if (text) hits.push({ filename, text: text.slice(0, 1200) });
+    if (text) hits.push({ fileId, filename, text: text.slice(0, 1800) });
   }
-  return hits.slice(0, 6);
+  return hits.slice(0, 8);
 }
 
 export function formatSearchHits(hits: Array<{ filename: string; text: string }>) {
