@@ -2,6 +2,7 @@ import { ConflictException, Injectable, NotFoundException } from '@nestjs/common
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrganizationDto } from './dto/create-organization.dto';
+import { ResourcesService } from './resources.service';
 import { UpdateOrganizationDto } from './dto/update-organization.dto';
 
 const publicOrganization = {
@@ -17,7 +18,10 @@ export function organizationNameKey(name: string) {
 
 @Injectable()
 export class OrganizationsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly resources: ResourcesService,
+  ) {}
 
   async list() {
     const organizations = await this.prisma.organization.findMany({
@@ -87,6 +91,7 @@ export class OrganizationsService {
     if (organization.scenarios.length > 0) {
       throw new ConflictException('Unpublish every scenario before deleting this organization.');
     }
+    await this.resources.discardOrganization(id);
     await this.prisma.$transaction([
       this.prisma.scenario.deleteMany({ where: { organizationId: id } }),
       this.prisma.organization.delete({ where: { id } }),

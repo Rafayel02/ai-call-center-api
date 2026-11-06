@@ -46,6 +46,12 @@ enum ExecutionSource {
   PHONE
 }
 
+enum ResourceStatus {
+  INDEXING
+  READY
+  FAILED
+}
+
 enum ExecutionAudioKind {
   CALLER
   MIX
@@ -65,6 +71,7 @@ model User {
   llmModels          LlmModel[]
   datasetSamples DatasetSample[]
   organizations  Organization[]
+  organizationResources OrganizationResource[]
   scenarios      Scenario[]
   scenarioExecutions ScenarioExecution[]
   phoneStreamingServices PhoneStreamingService[]
@@ -127,12 +134,33 @@ model Organization {
   description String?
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
+  openaiVectorStoreId String?  @unique @map("openai_vector_store_id")
   createdById String     @map("created_by") @db.Uuid
   createdBy   User       @relation(fields: [createdById], references: [id], onDelete: Restrict)
   scenarios   Scenario[]
+  resources   OrganizationResource[]
 
   @@index([createdById])
   @@map("organizations")
+}
+
+/// A file indexed in the organization's OpenAI vector store. Scenarios do not read these yet.
+model OrganizationResource {
+  id             String         @id @default(uuid()) @db.Uuid
+  organizationId String         @map("organization_id") @db.Uuid
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  byteSize       Int            @map("byte_size")
+  openaiFileId   String         @unique @map("openai_file_id")
+  status         ResourceStatus @default(INDEXING)
+  errorMessage   String?        @map("error_message")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  createdById    String         @map("created_by") @db.Uuid
+  createdBy      User           @relation(fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([organizationId])
+  @@index([createdById])
+  @@map("organization_resources")
 }
 
 model Scenario {
