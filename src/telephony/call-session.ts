@@ -41,7 +41,7 @@ export interface CallDeps {
     execution: ExecutionContext | null,
   ): { sentences: AsyncIterable<string>; turn: Promise<Turn> };
   judgeClosing(modelId: string, question: string, answer: string, execution: ExecutionContext | null): Promise<'questions' | 'done'>;
-  answerFromFiles?(query: string, resourceIds: string[], language: ScenarioLanguage): Promise<string | null>;
+  answerFromFiles?(query: string, resourceIds: string[], language: ScenarioLanguage): Promise<{ reply: string | null; passages: string } | null>;
   onDigit?(digit: string): void;
 }
 
@@ -306,7 +306,17 @@ export class PhoneScenarioSession {
       }
       const resourceIds = loopResourceIds(this.graph, node.id);
       if (resourceIds.length > 0 && text.trim() && this.deps.answerFromFiles) {
-        const reply = (await this.deps.answerFromFiles(text.trim(), resourceIds, this.language))?.trim() ?? '';
+        const found = await this.deps.answerFromFiles(text.trim(), resourceIds, this.language);
+        const reply = found?.reply?.trim() ?? '';
+        const passages = found?.passages ?? '';
+        await this.log.event({
+          type: 'file.search',
+          nodeId: node.id,
+          query: text.trim(),
+          status: passages && passages !== 'No passage matches this question.' ? 'ok' : 'no_match',
+          passages,
+          reply,
+        });
         this.cutPlayback();
         await delay.catch(() => undefined);
         if (reply) {

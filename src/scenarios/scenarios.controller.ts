@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, ParseUUIDPipe, Patch, Post, UseGuards } from '@nestjs/common';
+import { IncomingHttpHeaders } from 'http';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AuthUser, CurrentUser } from '../common/decorators/current-user.decorator';
 import { AddScenarioLanguageDto } from './dto/add-scenario-language.dto';
@@ -8,6 +9,7 @@ import { FileAnswerDto } from './dto/file-answer.dto';
 import { SaveScenarioGraphDto } from './dto/save-scenario-graph.dto';
 import { AttachPhoneNumberDto } from './dto/attach-phone-number.dto';
 import { SetScenarioActiveDto } from './dto/set-scenario-active.dto';
+import { readExecutionContext } from '../scenario-executions/execution-context';
 import { ScenariosService } from './scenarios.service';
 
 @Controller('scenarios')
@@ -46,8 +48,8 @@ export class ScenariosController {
   }
 
   @Post(':id/file-answer')
-  fileAnswer(@Param('id', ParseUUIDPipe) id: string, @Body() dto: FileAnswerDto) {
-    return this.scenarios.fileAnswer(id, dto);
+  fileAnswer(@Param('id', ParseUUIDPipe) id: string, @Body() dto: FileAnswerDto, @Headers() headers: IncomingHttpHeaders) {
+    return this.scenarios.fileAnswer(id, dto, readExecutionContext(headers));
   }
 
   @Patch(':id')

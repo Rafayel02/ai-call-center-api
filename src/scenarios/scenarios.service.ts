@@ -9,6 +9,8 @@ import { emptyScenarioGraph, parseScenarioGraph, readScenarioGraph } from './sce
 import { LANGUAGE_NAME, ScenarioLanguage, applyTranslations, clearGraphModels, detectScript, emptyVoice, isScenarioLanguage, languageModelsFor, modelsOnGraph, spokenSample, spokenSlots, stampLanguage } from './scenario-languages';
 import { readSpeechEngine, readVoiceMode, readVoicePrompt } from '../telephony/realtime-brief';
 import { ResourcesService } from '../organizations/resources.service';
+import { ExecutionContext } from '../scenario-executions/execution-context';
+import { ScenarioExecutionsService } from '../scenario-executions/scenario-executions.service';
 import { KnowledgeService } from './knowledge.service';
 import { SOURCE_LIMIT, SOURCE_TEXT_LIMIT, VoiceSource, publicVoiceSource, readTranslatedPrompt, readVoicePrompts, readVoiceSources, translateSystem } from './voice-context';
 import { PAGE_TEXT_LIMIT, THIN_SITE_PAGES, pageIdentity, siteHost } from './site-pages';
@@ -40,6 +42,7 @@ export class ScenariosService implements OnModuleInit {
     private readonly llm: LlmService,
     private readonly knowledge: KnowledgeService,
     private readonly resources: ResourcesService,
+    private readonly executions: ScenarioExecutionsService,
   ) {}
 
   async onModuleInit() {
@@ -228,7 +231,7 @@ export class ScenariosService implements OnModuleInit {
     }
   }
 
-  async fileAnswer(id: string, input: { query: string; resourceIds: string[]; language: string }) {
+  async fileAnswer(id: string, input: { query: string; resourceIds: string[]; language: string }, execution: ExecutionContext | null = null) {
     if (!isScenarioLanguage(input.language)) throw new BadRequestException('Choose a scenario language.');
     const scenario = await this.prisma.scenario.findUnique({
       where: { id },
@@ -243,8 +246,9 @@ export class ScenariosService implements OnModuleInit {
       const owned = await this.prisma.organizationResource.count({ where: { organizationId: scenario.organizationId, id: { in: resourceIds } } });
       if (owned !== resourceIds.length) throw new BadRequestException('Choose resources from this organization.');
     }
-    const reply = await this.resources.spokenAnswer(scenario.organizationId, resourceIds, input.query, voice.llmModelId, LANGUAGE_NAME[input.language]);
-    return { reply };
+    const found = await this.resources.spokenAnswer(scenario.organizationId, resourceIds, input.query, voice.llmModelId, LANGUAGE_NAME[input.language]);
+    if (execution) await this.executions.recordFileSearch(execution, { query: input.query.trim(), passages: found.passages, reply: found.reply });
+    return { reply: found.reply };
   }
 
   async addContextSource(id: string, input: { url?: string; name?: string; data?: string }) {

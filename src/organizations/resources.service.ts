@@ -71,18 +71,18 @@ export class ResourcesService {
     }
   }
 
-  /** A spoken sentence from the selected files. Social turns return null so the call can keep listening. */
+  /** A spoken sentence from the selected files, plus the passages that were searched. Social turns do not search. */
   async spokenAnswer(organizationId: string, resourceIds: string[], query: string, llmModelId: string, languageName: string) {
     const trimmed = query.trim();
-    if (!trimmed || !llmModelId || resourceIds.length === 0 || isSocialTurn(trimmed)) return null;
+    if (!trimmed || !llmModelId || resourceIds.length === 0 || isSocialTurn(trimmed)) return { reply: null, passages: '' };
     const passages = await this.passages(organizationId, resourceIds, trimmed);
     const instructions = 'Start with the answer from the connected files. A different spelling of the same product is the same subject. Speak the concrete details the passages contain, such as what the package includes, the price, or the conditions. Do not say you cannot help. Say the information is missing only when every passage is unrelated, and then that is the whole reply.';
     try {
       const reply = (await this.llm.voiceReply(llmModelId, languageName, trimmed, instructions, passages)).trim();
-      return reply || null;
+      return { reply: reply || null, passages };
     } catch {
-      if (!passages || passages === 'No passage matches this question.') return null;
-      return spokenFromPassages(passages);
+      if (!passages || passages === 'No passage matches this question.') return { reply: null, passages };
+      return { reply: spokenFromPassages(passages), passages };
     }
   }
 
