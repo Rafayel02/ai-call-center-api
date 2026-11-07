@@ -63,7 +63,7 @@ export async function searchOpenAiVectorStore(apiKey: string, vectorStoreId: str
 
 /** The same file search the calls use, plus the queries OpenAI actually ran. */
 export async function inspectOpenAiVectorStore(apiKey: string, vectorStoreId: string, query: string, fileIds: string[]) {
-  const body = { query, max_num_results: 12, rewrite_query: true };
+  const body = { query, max_num_results: 12, rewrite_query: false };
   const queries: string[] = [];
   try {
     const filtered = await openAiRequest(apiKey, `/vector_stores/${encodeURIComponent(vectorStoreId)}/search`, {

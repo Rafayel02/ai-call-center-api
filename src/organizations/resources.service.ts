@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from '@nes
 import { Prisma, ResourceStatus } from '@prisma/client';
 import { LlmService } from '../llm/llm.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { focusSearchQuery } from '../common/search-query';
 import { isSocialTurn, spokenFromPassages } from '../telephony/scenario-voice';
 import { pageIdentity } from '../scenarios/site-pages';
 import { publicUrl } from '../scenarios/voice-sources';
@@ -46,7 +47,7 @@ export class ResourcesService {
   ) {}
 
   async passages(organizationId: string, resourceIds: string[], query: string) {
-    const trimmed = query.trim().slice(0, 1000);
+    const trimmed = focusSearchQuery(query).slice(0, 1000);
     if (!trimmed || resourceIds.length === 0) return 'No passage matches this question.';
     const organization = await this.prisma.organization.findUnique({
       where: { id: organizationId },
@@ -76,26 +77,28 @@ export class ResourcesService {
   async search(organizationId: string, query: string) {
     const trimmed = query.trim().slice(0, 1000);
     if (!trimmed) throw new BadRequestException('Write an inquiry.');
+    const searchQuery = focusSearchQuery(trimmed);
     const organization = await this.prisma.organization.findUnique({
       where: { id: organizationId },
       select: { id: true, openaiVectorStoreId: true },
     });
     if (!organization) throw new NotFoundException('Organization not found.');
-    if (!organization.openaiVectorStoreId) return { query: trimmed, queries: [] as string[], hits: [] };
+    if (!organization.openaiVectorStoreId) return { query: trimmed, searchQuery, queries: [] as string[], hits: [] };
     const files = await this.prisma.organizationResource.findMany({
       where: { organizationId, status: ResourceStatus.READY },
       select: { name: true, sourceUrl: true, openaiFileId: true },
     });
-    if (files.length === 0) return { query: trimmed, queries: [] as string[], hits: [] };
+    if (files.length === 0) return { query: trimmed, searchQuery, queries: [] as string[], hits: [] };
     const found = await inspectOpenAiVectorStore(
       await this.key(),
       organization.openaiVectorStoreId,
-      trimmed,
+      searchQuery,
       files.map((file) => file.openaiFileId),
     );
     const named = new Map(files.map((file) => [file.openaiFileId, file]));
     return {
       query: trimmed,
+      searchQuery,
       queries: found.queries,
       hits: found.hits.map((hit) => {
         const file = named.get(hit.fileId);
@@ -112,15 +115,16 @@ export class ResourcesService {
   /** A spoken sentence from the selected files, plus the passages that were searched. Social turns do not search. */
   async spokenAnswer(organizationId: string, resourceIds: string[], query: string, llmModelId: string, languageName: string) {
     const trimmed = query.trim();
-    if (!trimmed || !llmModelId || resourceIds.length === 0 || isSocialTurn(trimmed)) return { reply: null, passages: '' };
-    const passages = await this.passages(organizationId, resourceIds, trimmed);
+    const searchQuery = focusSearchQuery(trimmed);
+    if (!trimmed || !llmModelId || resourceIds.length === 0 || isSocialTurn(trimmed)) return { reply: null, passages: '', searchQuery };
+    const passages = await this.passages(organizationId, resourceIds, searchQuery);
     const instructions = 'Start with the answer from the connected files. A different spelling of the same product is the same subject. Speak the concrete details the passages contain, such as what the package includes, the price, or the conditions. Do not say you cannot help. Say the information is missing only when every passage is unrelated, and then that is the whole reply.';
     try {
       const reply = (await this.llm.voiceReply(llmModelId, languageName, trimmed, instructions, passages)).trim();
-      return { reply: reply || null, passages };
+      return { reply: reply || null, passages, searchQuery };
     } catch {
-      if (!passages || passages === 'No passage matches this question.') return { reply: null, passages };
-      return { reply: spokenFromPassages(passages), passages };
+      if (!passages || passages === 'No passage matches this question.') return { reply: null, passages, searchQuery };
+      return { reply: spokenFromPassages(passages), passages, searchQuery };
     }
   }
 

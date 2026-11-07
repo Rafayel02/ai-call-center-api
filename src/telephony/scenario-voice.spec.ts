@@ -28,7 +28,7 @@ test('required roaming lookup reaches the LLM before the voice receives a reply'
   const result = await flow.execute('run_step', { nodeId: 'roaming', revision: 0, query: 'Roaming in France?', search: false }) as { status: string; reply: string };
   assert.equal(result.status, 'ok');
   assert.match(result.reply, /100 AMD/);
-  assert.deepEqual(calls, ['Roaming in France?', 'llm']);
+  assert.deepEqual(calls, ['roaming in france', 'llm']);
   assert.ok(events.some((event) => event.type === 'knowledge.result' && event.status === 'ok'));
   assert.equal(flow.state().nodeId, 'roaming');
 });
@@ -121,7 +121,7 @@ test('a connected resource lets the loop answer a real question', async () => {
   const result = await flow.execute('run_step', { nodeId: 'loop-1', revision: 0, query: 'What is Cosmoe?' }) as { status: string; reply: string };
   assert.equal(result.status, 'ok');
   assert.match(result.reply, /Cosmoe/);
-  assert.deepEqual(calls, ['What is Cosmoe?:22222222-2222-4222-8222-222222222222', 'reply']);
+  assert.deepEqual(calls, ['what is cosmoe:22222222-2222-4222-8222-222222222222', 'reply']);
   assert.equal(isSocialTurn('thanks'), true);
   assert.equal(isSocialTurn('What is Cosmoe?'), false);
 });

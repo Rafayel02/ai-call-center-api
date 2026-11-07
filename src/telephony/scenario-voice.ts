@@ -1,3 +1,4 @@
+import { focusSearchQuery } from '../common/search-query';
 import { loopResourceIds, ScenarioGraph, ScenarioGraphNode } from '../scenarios/scenario-graph';
 import { LANGUAGE_NAME, ScenarioLanguage, delayLines, spokenLine } from '../scenarios/scenario-languages';
 import { RealtimeTools, withVoiceTimeout } from './realtime-tools';
@@ -116,14 +117,15 @@ export class ScenarioVoice implements RealtimeTools {
     this.turns += 1;
     this.trace('step.started', { query, search });
     try {
-      const passages = search ? await withVoiceTimeout(this.deps.search(query, resourceIds.length > 0 ? resourceIds : undefined)) : null;
+      const lookup = focusSearchQuery(query);
+      const passages = search ? await withVoiceTimeout(this.deps.search(lookup, resourceIds.length > 0 ? resourceIds : undefined)) : null;
       if (search && (!passages || passages === 'No passage matches this question.')) {
         if (resourceIds.length > 0) this.resourceAnswered = true;
         const result = { status: 'no_match', state: this.state() };
-        this.trace('knowledge.result', { query, status: 'no_match' });
+        this.trace('knowledge.result', { query: lookup, status: 'no_match' });
         return result;
       }
-      if (search) this.trace('knowledge.result', { query, status: 'ok', passages });
+      if (search) this.trace('knowledge.result', { query: lookup, status: 'ok', passages });
       const instructions = resourceIds.length > 0
         ? 'Start with the answer from the connected files. A different spelling of the same product is the same subject. Speak the concrete details the passages contain, such as what the package includes, the price, or the conditions. Do not say you cannot help. Say the information is missing only when every passage is unrelated, and then that is the whole reply.'
         : (data.instructions ?? '');

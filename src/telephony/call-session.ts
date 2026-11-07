@@ -41,7 +41,7 @@ export interface CallDeps {
     execution: ExecutionContext | null,
   ): { sentences: AsyncIterable<string>; turn: Promise<Turn> };
   judgeClosing(modelId: string, question: string, answer: string, execution: ExecutionContext | null): Promise<'questions' | 'done'>;
-  answerFromFiles?(query: string, resourceIds: string[], language: ScenarioLanguage): Promise<{ reply: string | null; passages: string } | null>;
+  answerFromFiles?(query: string, resourceIds: string[], language: ScenarioLanguage): Promise<{ reply: string | null; passages: string; searchQuery?: string } | null>;
   onDigit?(digit: string): void;
 }
 
@@ -313,6 +313,7 @@ export class PhoneScenarioSession {
           type: 'file.search',
           nodeId: node.id,
           query: text.trim(),
+          searchQuery: found?.searchQuery || text.trim(),
           status: passages && passages !== 'No passage matches this question.' ? 'ok' : 'no_match',
           passages,
           reply,

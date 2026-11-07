@@ -445,13 +445,14 @@ export class ScenarioExecutionsService implements OnModuleInit {
     return row;
   }
 
-  async recordFileSearch(ctx: ExecutionContext | null, input: { query: string; passages: string; reply: string | null }) {
+  async recordFileSearch(ctx: ExecutionContext | null, input: { query: string; searchQuery?: string; passages: string; reply: string | null }) {
     if (!ctx) return;
     const passages = input.passages.trim();
     await this.recordProviderEvent(ctx, {
       type: 'file.search',
       payload: {
         query: input.query,
+        searchQuery: input.searchQuery || input.query,
         status: passages && passages !== 'No passage matches this question.' ? 'ok' : 'no_match',
         passages,
         reply: input.reply,

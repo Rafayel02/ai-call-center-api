@@ -247,7 +247,7 @@ export class ScenariosService implements OnModuleInit {
       if (owned !== resourceIds.length) throw new BadRequestException('Choose resources from this organization.');
     }
     const found = await this.resources.spokenAnswer(scenario.organizationId, resourceIds, input.query, voice.llmModelId, LANGUAGE_NAME[input.language]);
-    if (execution) await this.executions.recordFileSearch(execution, { query: input.query.trim(), passages: found.passages, reply: found.reply });
+    if (execution) await this.executions.recordFileSearch(execution, { query: input.query.trim(), searchQuery: found.searchQuery, passages: found.passages, reply: found.reply });
     return { reply: found.reply };
   }
 
