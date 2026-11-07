@@ -55,17 +55,26 @@ export async function deleteOpenAiFile(apiKey: string, vectorStoreId: string, fi
   });
 }
 
+export type VectorSearchHit = { fileId: string; filename: string; text: string; score: number | null };
+
 export async function searchOpenAiVectorStore(apiKey: string, vectorStoreId: string, query: string, fileIds: string[]) {
+  return (await inspectOpenAiVectorStore(apiKey, vectorStoreId, query, fileIds)).hits;
+}
+
+/** The same file search the calls use, plus the queries OpenAI actually ran. */
+export async function inspectOpenAiVectorStore(apiKey: string, vectorStoreId: string, query: string, fileIds: string[]) {
   const body = { query, max_num_results: 12, rewrite_query: true };
+  const queries: string[] = [];
   try {
     const filtered = await openAiRequest(apiKey, `/vector_stores/${encodeURIComponent(vectorStoreId)}/search`, {
       method: 'POST',
       body: JSON.stringify({ ...body, filters: { type: 'in', key: 'file_id', value: fileIds } }),
     });
+    queries.push(...readSearchQueries(filtered));
     const hits = readSearchHits(filtered);
     const matched = hits.filter((hit) => fileIds.includes(hit.fileId));
-    if (matched.length > 0) return matched;
-    if (hits.length > 0 && hits.every((hit) => !hit.fileId)) return hits;
+    if (matched.length > 0) return { hits: matched, queries: uniqueQueries(queries) };
+    if (hits.length > 0 && hits.every((hit) => !hit.fileId)) return { hits, queries: uniqueQueries(queries) };
   } catch (error) {
     if (!(error instanceof OpenAiRequestError) || error.status < 400 || error.status >= 500) throw error;
   }
@@ -73,25 +82,37 @@ export async function searchOpenAiVectorStore(apiKey: string, vectorStoreId: str
     method: 'POST',
     body: JSON.stringify(body),
   });
-  return readSearchHits(open).filter((hit) => fileIds.includes(hit.fileId));
+  queries.push(...readSearchQueries(open));
+  return { hits: readSearchHits(open).filter((hit) => fileIds.includes(hit.fileId)), queries: uniqueQueries(queries) };
+}
+
+export function readSearchQueries(payload: unknown) {
+  const value = payload && typeof payload === 'object' && 'search_query' in payload ? (payload as { search_query?: unknown }).search_query : [];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim());
+}
+
+function uniqueQueries(queries: string[]) {
+  return [...new Set(queries)];
 }
 
 export function readSearchHits(payload: unknown) {
   const data = payload && typeof payload === 'object' && 'data' in payload ? (payload as { data?: unknown }).data : [];
   if (!Array.isArray(data)) return [];
-  const hits: Array<{ fileId: string; filename: string; text: string }> = [];
+  const hits: VectorSearchHit[] = [];
   for (const item of data) {
     if (!item || typeof item !== 'object') continue;
-    const row = item as { file_id?: unknown; filename?: unknown; content?: unknown };
+    const row = item as { file_id?: unknown; filename?: unknown; content?: unknown; score?: unknown };
     const fileId = typeof row.file_id === 'string' ? row.file_id : '';
     const filename = typeof row.filename === 'string' && row.filename.trim() ? row.filename.trim() : 'file';
+    const score = typeof row.score === 'number' && Number.isFinite(row.score) ? row.score : null;
     const parts = Array.isArray(row.content) ? row.content : [];
     const text = parts
       .map((part) => (part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string' ? (part as { text: string }).text : ''))
       .join('\n')
       .replace(/\s+/g, ' ')
       .trim();
-    if (text) hits.push({ fileId, filename, text: text.slice(0, 1800) });
+    if (text) hits.push({ fileId, filename, text: text.slice(0, 1800), score });
   }
   return hits.slice(0, 8);
 }

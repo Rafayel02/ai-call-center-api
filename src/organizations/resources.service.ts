@@ -17,6 +17,7 @@ import {
   formatSearchHits,
   OpenAiRequestError,
   readOpenAiFile,
+  inspectOpenAiVectorStore,
   searchOpenAiVectorStore,
   uploadOpenAiFile,
 } from './openai-vector-store';
@@ -69,6 +70,43 @@ export class ResourcesService {
       this.logger.warn(`Resource search failed: ${error instanceof Error ? error.message : 'unknown error'}`);
       throw error;
     }
+  }
+
+  /** Search every ready file in the organization and return the passages OpenAI ranked. */
+  async search(organizationId: string, query: string) {
+    const trimmed = query.trim().slice(0, 1000);
+    if (!trimmed) throw new BadRequestException('Write an inquiry.');
+    const organization = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { id: true, openaiVectorStoreId: true },
+    });
+    if (!organization) throw new NotFoundException('Organization not found.');
+    if (!organization.openaiVectorStoreId) return { query: trimmed, queries: [] as string[], hits: [] };
+    const files = await this.prisma.organizationResource.findMany({
+      where: { organizationId, status: ResourceStatus.READY },
+      select: { name: true, sourceUrl: true, openaiFileId: true },
+    });
+    if (files.length === 0) return { query: trimmed, queries: [] as string[], hits: [] };
+    const found = await inspectOpenAiVectorStore(
+      await this.key(),
+      organization.openaiVectorStoreId,
+      trimmed,
+      files.map((file) => file.openaiFileId),
+    );
+    const named = new Map(files.map((file) => [file.openaiFileId, file]));
+    return {
+      query: trimmed,
+      queries: found.queries,
+      hits: found.hits.map((hit) => {
+        const file = named.get(hit.fileId);
+        return {
+          name: file?.name || hit.filename,
+          sourceUrl: file?.sourceUrl ?? null,
+          score: hit.score,
+          text: hit.text,
+        };
+      }),
+    };
   }
 
   /** A spoken sentence from the selected files, plus the passages that were searched. Social turns do not search. */

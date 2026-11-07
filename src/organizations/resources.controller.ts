@@ -4,6 +4,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AuthUser, CurrentUser } from '../common/decorators/current-user.decorator';
 import { CreateResourceDto } from './dto/create-resource.dto';
 import { ImportSiteDto } from './dto/import-site.dto';
+import { SearchResourcesDto } from './dto/search-resources.dto';
 import { ResourcesService } from './resources.service';
 
 @Controller('organizations/:organizationId/resources')
@@ -14,6 +15,11 @@ export class ResourcesController {
   @Get()
   list(@Param('organizationId', ParseUUIDPipe) organizationId: string) {
     return this.resources.list(organizationId);
+  }
+
+  @Post('search')
+  search(@Param('organizationId', ParseUUIDPipe) organizationId: string, @Body() dto: SearchResourcesDto) {
+    return this.resources.search(organizationId, dto.query);
   }
 
   @Post('site')
