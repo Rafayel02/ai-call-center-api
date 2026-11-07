@@ -143,6 +143,15 @@ export class ScenariosService implements OnModuleInit {
     });
   }
 
+  private async ownedResourceIds(organizationId: string, resourceIds: string[]) {
+    const rows = await this.prisma.organizationResource.findMany({
+      where: { organizationId, id: { in: resourceIds } },
+      select: { id: true },
+    });
+    const live = new Set(rows.map((row) => row.id));
+    return resourceIds.filter((id) => live.has(id));
+  }
+
   private async assertModels(
     model: { findMany(args: { where: { id: { in: string[] } }; select: { id: true } }): Promise<Array<{ id: string }>> },
     ids: string[],
@@ -198,10 +207,10 @@ export class ScenariosService implements OnModuleInit {
     const graph = parseScenarioGraph(dto, languages);
     const resourceIds = [...new Set(graph.nodes.flatMap((node) => (node.type === 'resources' ? node.data.resourceIds : [])))];
     if (resourceIds.length > 0) {
-      const owned = await this.prisma.organizationResource.count({
-        where: { organizationId: existing.organizationId, id: { in: resourceIds } },
-      });
-      if (owned !== resourceIds.length) throw new BadRequestException('Choose resources from this organization.');
+      const owned = new Set(await this.ownedResourceIds(existing.organizationId, resourceIds));
+      for (const node of graph.nodes) {
+        if (node.type === 'resources') node.data.resourceIds = node.data.resourceIds.filter((id) => owned.has(id));
+      }
     }
     const languageModels = dto.languageModels === undefined ? undefined : languageModelsFor(languages, dto.languageModels, true);
     const ids = modelIds(languageModels);
@@ -241,10 +250,10 @@ export class ScenariosService implements OnModuleInit {
     const languages = scenario.languages.filter(isScenarioLanguage);
     const voice = languageModelsFor(languages, scenario.languageModels, false)[input.language];
     if (!voice?.llmModelId) throw new BadRequestException('Choose the language LLM before answering from files.');
-    const resourceIds = [...new Set(input.resourceIds)];
-    if (resourceIds.length > 0) {
-      const owned = await this.prisma.organizationResource.count({ where: { organizationId: scenario.organizationId, id: { in: resourceIds } } });
-      if (owned !== resourceIds.length) throw new BadRequestException('Choose resources from this organization.');
+    const requested = [...new Set(input.resourceIds)];
+    const resourceIds = requested.length > 0 ? await this.ownedResourceIds(scenario.organizationId, requested) : [];
+    if (requested.length > 0 && resourceIds.length === 0) {
+      throw new BadRequestException('Those files are no longer in this organization. Choose them again on the Resources block.');
     }
     const found = await this.resources.spokenAnswer(scenario.organizationId, resourceIds, input.query, voice.llmModelId, LANGUAGE_NAME[input.language]);
     if (execution) await this.executions.recordFileSearch(execution, { query: input.query.trim(), searchQuery: found.searchQuery, passages: found.passages, reply: found.reply });
