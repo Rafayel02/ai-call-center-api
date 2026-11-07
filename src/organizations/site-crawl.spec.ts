@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
+import { pageIdentity } from '../scenarios/site-pages';
 import { crawlWebsite, type FetchedPage } from './site-crawl';
 
 test('a local site exports each page once and continues after a failure', async () => {
@@ -58,6 +59,46 @@ test('a second crawl skips pages that were already saved', async () => {
     await close(server);
   }
 });
+
+test('a language address continues into that language when its first page was already saved', async () => {
+  const pages: Record<string, string> = {
+    '/en': page('English home', ['/en/plans', '/hy', '/ru']),
+    '/en/plans': page('English plans with weekday prices and included minutes.', []),
+    '/hy': page('Armenian home', ['/hy/cosmo', '/en']),
+    '/hy/cosmo': page('Կոսմո includes television, home internet, and a mobile line.', []),
+    '/ru': page('Russian home with tariffs and television packages.', []),
+    '/robots.txt': 'User-agent: *\nAllow: /\n',
+  };
+  const server = await listen((request, response) => {
+    const path = (request.url ?? '/').split('?')[0];
+    const body = pages[path];
+    if (!body) {
+      response.writeHead(404, { 'content-type': 'text/plain' });
+      response.end('missing');
+      return;
+    }
+    response.writeHead(200, { 'content-type': path.endsWith('.txt') ? 'text/plain' : 'text/html' });
+    response.end(body);
+  });
+  try {
+    const origin = address(server);
+    const fetchPage = (url: string) => fetchLocal(url);
+    const english = await crawlWebsite(`${origin}/en`, { fetchPage });
+    assert.deepEqual(english.exported.map((item) => new URL(item.url).pathname).sort(), ['/en', '/en/plans']);
+    const known = new Set(english.exported.map((item) => item.url));
+    known.add(pageIdentity(`${origin}/hy`)!);
+    const armenian = await crawlWebsite(`${origin}/hy`, { fetchPage, known });
+    assert.deepEqual(armenian.exported.map((item) => new URL(item.url).pathname), ['/hy/cosmo']);
+    assert.ok(armenian.skipped.some((item) => item.reason === 'Already saved.'));
+  } finally {
+    await close(server);
+  }
+});
+
+function page(text: string, links: string[]) {
+  const anchors = links.map((href) => `<a href="${href}">${href}</a>`).join('');
+  return `<html><title>${text}</title><main><h1>${text}</h1><p>${text} Details for this page stay long enough to save.</p>${anchors}</main></html>`;
+}
 
 async function fetchLocal(url: string): Promise<FetchedPage> {
   const response = await fetch(url);

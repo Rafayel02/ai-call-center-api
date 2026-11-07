@@ -36,6 +36,8 @@ export async function crawlWebsite(
 ): Promise<CrawlReport> {
   const maxPages = Math.min(Math.max(options.maxPages ?? SITE_PAGE_CAP, 1), SITE_PAGE_CAP);
   const site = new URL(start);
+  const section = languageSection(site);
+  const startIdentity = pageIdentity(cleanPageUrl(start, site) ?? start);
   const known = options.known ?? new Set<string>();
   const seen = new Set<string>();
   const names = new Set<string>();
@@ -48,6 +50,10 @@ export async function crawlWebsite(
       const cleaned = cleanPageUrl(url, site);
       const identity = cleaned ? pageIdentity(cleaned) : null;
       if (!cleaned || !identity || seen.has(identity) || queue.includes(cleaned)) continue;
+      if (!inLanguageSection(cleaned, section)) {
+        seen.add(identity);
+        continue;
+      }
       if (enforceRobots) {
         try {
           if (!robotsAllows(robotsText, new URL(cleaned).pathname)) {
@@ -58,6 +64,12 @@ export async function crawlWebsite(
         } catch {
           continue;
         }
+      }
+      // A page that is already saved must not take one of the 40 slots, except the address that was pasted.
+      if (known.has(identity) && identity !== startIdentity) {
+        report.skipped.push({ url: cleaned, reason: 'Already saved.' });
+        seen.add(identity);
+        continue;
       }
       if (report.exported.length + queue.length >= maxPages) return;
       queue.push(cleaned);
@@ -80,6 +92,12 @@ export async function crawlWebsite(
         report.discovered += 1;
         if (known.has(identity)) {
           report.skipped.push({ url, reason: 'Already saved.' });
+          try {
+            const page = await options.fetchPage(url);
+            if (page.kind === 'html') found.push(...pageLinks(page.body, new URL(page.url)));
+          } catch {
+            // The saved page can still be searched. A failed refresh does not add pages.
+          }
           return;
         }
         let page: FetchedPage;
@@ -123,6 +141,21 @@ export async function crawlWebsite(
     enqueue(found, true);
   }
   return report;
+}
+
+/** The first path segment when it is a language code, such as /hy or /en. */
+function languageSection(site: URL) {
+  const segment = site.pathname.split('/').filter(Boolean)[0]?.toLowerCase();
+  return segment && /^[a-z]{2}$/.test(segment) ? segment : null;
+}
+
+function inLanguageSection(url: string, section: string | null) {
+  if (!section) return true;
+  try {
+    return new URL(url).pathname.toLowerCase().split('/').filter(Boolean).includes(section);
+  } catch {
+    return false;
+  }
 }
 
 async function sitemapPages(site: URL, fetchPage: (url: string) => Promise<FetchedPage>): Promise<{ pages: string[]; robots: string }> {
